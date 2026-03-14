@@ -14,16 +14,25 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.grid.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import coil.compose.AsyncImage
 import com.example.storageoptimizer.ui.theme.StorageOptimizerTheme
+
+// Represents a single image from MediaStore
+data class ImageItem(
+    val id: Long,
+    val uri: Uri
+)
 
 class MainActivity : ComponentActivity() {
 
@@ -34,7 +43,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             StorageOptimizerTheme {
 
-                var imageCount by remember { mutableStateOf(0) }
+                var images by remember { mutableStateOf(listOf<ImageItem>()) }
                 var permissionDenied by remember { mutableStateOf(false) }
                 var permanentlyDenied by remember { mutableStateOf(false) }
 
@@ -50,9 +59,8 @@ class MainActivity : ComponentActivity() {
                     if (isGranted) {
                         permissionDenied = false
                         permanentlyDenied = false
-                        imageCount = countImages()
+                        images = loadImages()
                     } else {
-                        // After denial, if shouldShowRationale is false → permanently denied
                         val canStillAsk = ActivityCompat.shouldShowRequestPermissionRationale(
                             this@MainActivity,
                             requiredPermission
@@ -69,17 +77,20 @@ class MainActivity : ComponentActivity() {
 
                 Surface(modifier = Modifier.fillMaxSize()) {
                     Column(
-                        modifier = Modifier.fillMaxSize(),
-                        verticalArrangement = Arrangement.Center,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(16.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
 
+                        Spacer(modifier = Modifier.height(48.dp))
+
                         Text(
-                            text = "Images found: $imageCount",
+                            text = "Images found: ${images.size}",
                             style = MaterialTheme.typography.headlineMedium
                         )
 
-                        Spacer(modifier = Modifier.height(20.dp))
+                        Spacer(modifier = Modifier.height(16.dp))
 
                         Button(
                             onClick = {
@@ -91,18 +102,18 @@ class MainActivity : ComponentActivity() {
                                 if (granted) {
                                     permissionDenied = false
                                     permanentlyDenied = false
-                                    imageCount = countImages()
+                                    images = loadImages()
                                 } else {
                                     val canAsk = ActivityCompat.shouldShowRequestPermissionRationale(
                                         this@MainActivity,
                                         requiredPermission
                                     )
                                     if (canAsk || !permanentlyDenied) {
-                                        // Show system popup
                                         permissionLauncher.launch(requiredPermission)
                                     } else {
-                                        // Permanently denied — open app settings
-                                        val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                        val intent = Intent(
+                                            Settings.ACTION_APPLICATION_DETAILS_SETTINGS
+                                        ).apply {
                                             data = Uri.fromParts("package", packageName, null)
                                         }
                                         startActivity(intent)
@@ -113,23 +124,55 @@ class MainActivity : ComponentActivity() {
                             Text("Scan Storage")
                         }
 
-                        Spacer(modifier = Modifier.height(12.dp))
-
+                        // Permission status messages
                         when {
-                            permissionDenied -> Text(
-                                text = "No permission granted. Tap \"Scan Storage\" to try again.",
-                                color = Color.Red,
-                                style = MaterialTheme.typography.bodyMedium,
-                                textAlign = TextAlign.Center,
-                                modifier = Modifier.padding(horizontal = 32.dp)
-                            )
-                            permanentlyDenied -> Text(
-                                text = "Permission permanently denied. Tap \"Scan Storage\" to open Settings and enable it manually.",
-                                color = Color(0xFFFF6600),
-                                style = MaterialTheme.typography.bodyMedium,
-                                textAlign = TextAlign.Center,
-                                modifier = Modifier.padding(horizontal = 32.dp)
-                            )
+                            permissionDenied -> {
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text = "No permission granted. Tap \"Scan Storage\" to try again.",
+                                    color = Color.Red,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.padding(horizontal = 32.dp)
+                                )
+                            }
+                            permanentlyDenied -> {
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text = "Permission permanently denied. Tap \"Scan Storage\" to open Settings and enable it manually.",
+                                    color = Color(0xFFFF6600),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.padding(horizontal = 32.dp)
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        // Image grid — only shown when images are loaded
+                        if (images.isNotEmpty()) {
+                            LazyVerticalGrid(
+                                columns = GridCells.Fixed(3),
+                                modifier = Modifier.fillMaxSize(),
+                                contentPadding = PaddingValues(4.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp),
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                items(
+                                    items = images,
+                                    key = { it.id }  // stable keys = better scroll performance
+                                ) { image ->
+                                    AsyncImage(
+                                        model = image.uri,
+                                        contentDescription = null,
+                                        contentScale = ContentScale.Crop, // uniform square thumbnails
+                                        modifier = Modifier
+                                            .aspectRatio(1f)             // perfect squares
+                                            .fillMaxWidth()
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -137,14 +180,33 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun countImages(): Int {
+    private fun loadImages(): List<ImageItem> {
+        val imageList = mutableListOf<ImageItem>()
+
         val projection = arrayOf(MediaStore.Images.Media._ID)
+
         val cursor = contentResolver.query(
             MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-            projection, null, null, null
+            projection,
+            null,
+            null,
+            // Sort by newest first
+            "${MediaStore.Images.Media.DATE_ADDED} DESC"
         )
-        val count = cursor?.count ?: 0
-        cursor?.close()
-        return count
+
+        cursor?.use {
+            val idColumn = it.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
+
+            while (it.moveToNext()) {
+                val id = it.getLong(idColumn)
+                val uri = Uri.withAppendedPath(
+                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                    id.toString()
+                )
+                imageList.add(ImageItem(id, uri))
+            }
+        }
+
+        return imageList
     }
 }
