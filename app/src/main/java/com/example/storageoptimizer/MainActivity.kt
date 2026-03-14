@@ -25,10 +25,13 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
 import coil.compose.AsyncImage
 import com.example.storageoptimizer.ui.theme.StorageOptimizerTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
-// Represents a single image from MediaStore
 data class ImageItem(
     val id: Long,
     val uri: Uri
@@ -46,11 +49,24 @@ class MainActivity : ComponentActivity() {
                 var images by remember { mutableStateOf(listOf<ImageItem>()) }
                 var permissionDenied by remember { mutableStateOf(false) }
                 var permanentlyDenied by remember { mutableStateOf(false) }
+                var isScanning by remember { mutableStateOf(false) }
 
                 val requiredPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     Manifest.permission.READ_MEDIA_IMAGES
                 } else {
                     Manifest.permission.READ_EXTERNAL_STORAGE
+                }
+
+                // Helper to avoid repeating coroutine block in two places
+                fun scanImages() {
+                    isScanning = true
+                    lifecycleScope.launch {
+                        val result = withContext(Dispatchers.IO) {
+                            loadImages()
+                        }
+                        images = result
+                        isScanning = false
+                    }
                 }
 
                 val permissionLauncher = rememberLauncherForActivityResult(
@@ -59,7 +75,7 @@ class MainActivity : ComponentActivity() {
                     if (isGranted) {
                         permissionDenied = false
                         permanentlyDenied = false
-                        images = loadImages()
+                        scanImages()   // ← permission callback
                     } else {
                         val canStillAsk = ActivityCompat.shouldShowRequestPermissionRationale(
                             this@MainActivity,
@@ -102,7 +118,7 @@ class MainActivity : ComponentActivity() {
                                 if (granted) {
                                     permissionDenied = false
                                     permanentlyDenied = false
-                                    images = loadImages()
+                                    scanImages()   // ← button click
                                 } else {
                                     val canAsk = ActivityCompat.shouldShowRequestPermissionRationale(
                                         this@MainActivity,
@@ -119,7 +135,8 @@ class MainActivity : ComponentActivity() {
                                         startActivity(intent)
                                     }
                                 }
-                            }
+                            },
+                            enabled = !isScanning  // prevent double-tap while scanning
                         ) {
                             Text("Scan Storage")
                         }
@@ -150,7 +167,26 @@ class MainActivity : ComponentActivity() {
 
                         Spacer(modifier = Modifier.height(16.dp))
 
-                        // Image grid — only shown when images are loaded
+                        // Scanning indicator
+                        if (isScanning) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center,
+                                modifier = Modifier.padding(8.dp)
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    strokeWidth = 2.dp
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "Scanning images...",
+                                    style = MaterialTheme.typography.bodyLarge
+                                )
+                            }
+                        }
+
+                        // Image grid
                         if (images.isNotEmpty()) {
                             LazyVerticalGrid(
                                 columns = GridCells.Fixed(3),
@@ -161,14 +197,14 @@ class MainActivity : ComponentActivity() {
                             ) {
                                 items(
                                     items = images,
-                                    key = { it.id }  // stable keys = better scroll performance
+                                    key = { it.id }
                                 ) { image ->
                                     AsyncImage(
                                         model = image.uri,
                                         contentDescription = null,
-                                        contentScale = ContentScale.Crop, // uniform square thumbnails
+                                        contentScale = ContentScale.Crop,
                                         modifier = Modifier
-                                            .aspectRatio(1f)             // perfect squares
+                                            .aspectRatio(1f)
                                             .fillMaxWidth()
                                     )
                                 }
@@ -190,13 +226,11 @@ class MainActivity : ComponentActivity() {
             projection,
             null,
             null,
-            // Sort by newest first
             "${MediaStore.Images.Media.DATE_ADDED} DESC"
         )
 
         cursor?.use {
             val idColumn = it.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
-
             while (it.moveToNext()) {
                 val id = it.getLong(idColumn)
                 val uri = Uri.withAppendedPath(
