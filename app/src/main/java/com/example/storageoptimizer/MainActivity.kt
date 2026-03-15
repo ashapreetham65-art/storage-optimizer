@@ -108,102 +108,123 @@ class MainActivity : ComponentActivity() {
 
                         Spacer(modifier = Modifier.height(48.dp))
 
-                        Text(
-                            text = "Images found: ${images.size}",
-                            style = MaterialTheme.typography.headlineMedium
-                        )
-
-                        // Only visible during selection mode
-                        if (selectionMode) {
-                            Spacer(modifier = Modifier.height(4.dp))
+                        // ── Header — switches between normal and selection mode ──
+                        if (!selectionMode) {
                             Text(
-                                text = "Selected: ${selectedImages.size}",
-                                style = MaterialTheme.typography.bodyLarge,
-                                color = MaterialTheme.colorScheme.primary
+                                text = "Images found: ${images.size}",
+                                style = MaterialTheme.typography.headlineMedium
                             )
+                        } else {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                TextButton(
+                                    onClick = {
+                                        selectionMode = false
+                                        selectedImages = emptySet()
+                                    }
+                                ) {
+                                    Text("Cancel")
+                                }
+
+                                Text(
+                                    text = "Selected: ${selectedImages.size} / ${images.size}",
+                                    style = MaterialTheme.typography.titleMedium
+                                )
+
+                                // Balances the row so the counter stays centered
+                                Spacer(modifier = Modifier.width(64.dp))
+                            }
                         }
 
-                        Spacer(modifier = Modifier.height(16.dp))
+                        // ── Everything below hidden during selection mode ──
+                        if (!selectionMode) {
 
-                        Button(
-                            onClick = {
-                                val granted = ContextCompat.checkSelfPermission(
-                                    this@MainActivity,
-                                    requiredPermission
-                                ) == PackageManager.PERMISSION_GRANTED
+                            Spacer(modifier = Modifier.height(16.dp))
 
-                                if (granted) {
-                                    permissionDenied = false
-                                    permanentlyDenied = false
-                                    scanImages()
-                                } else {
-                                    val canAsk = ActivityCompat.shouldShowRequestPermissionRationale(
+                            Button(
+                                onClick = {
+                                    val granted = ContextCompat.checkSelfPermission(
                                         this@MainActivity,
                                         requiredPermission
-                                    )
-                                    if (canAsk || !permanentlyDenied) {
-                                        permissionLauncher.launch(requiredPermission)
-                                    } else {
-                                        val intent = Intent(
-                                            Settings.ACTION_APPLICATION_DETAILS_SETTINGS
-                                        ).apply {
-                                            data = Uri.fromParts("package", packageName, null)
-                                        }
-                                        startActivity(intent)
-                                    }
-                                }
-                            },
-                            enabled = !isScanning
-                        ) {
-                            Text("Scan Storage")
-                        }
+                                    ) == PackageManager.PERMISSION_GRANTED
 
-                        // Permission status messages
-                        when {
-                            permissionDenied -> {
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Text(
-                                    text = "No permission granted. Tap \"Scan Storage\" to try again.",
-                                    color = Color.Red,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    textAlign = TextAlign.Center,
-                                    modifier = Modifier.padding(horizontal = 32.dp)
-                                )
+                                    if (granted) {
+                                        permissionDenied = false
+                                        permanentlyDenied = false
+                                        scanImages()
+                                    } else {
+                                        val canAsk = ActivityCompat.shouldShowRequestPermissionRationale(
+                                            this@MainActivity,
+                                            requiredPermission
+                                        )
+                                        if (canAsk || !permanentlyDenied) {
+                                            permissionLauncher.launch(requiredPermission)
+                                        } else {
+                                            val intent = Intent(
+                                                Settings.ACTION_APPLICATION_DETAILS_SETTINGS
+                                            ).apply {
+                                                data = Uri.fromParts("package", packageName, null)
+                                            }
+                                            startActivity(intent)
+                                        }
+                                    }
+                                },
+                                enabled = !isScanning
+                            ) {
+                                Text("Scan Storage")
                             }
-                            permanentlyDenied -> {
+
+                            // Permission status messages
+                            when {
+                                permissionDenied -> {
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Text(
+                                        text = "No permission granted. Tap \"Scan Storage\" to try again.",
+                                        color = Color.Red,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        textAlign = TextAlign.Center,
+                                        modifier = Modifier.padding(horizontal = 32.dp)
+                                    )
+                                }
+                                permanentlyDenied -> {
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Text(
+                                        text = "Permission permanently denied. Tap \"Scan Storage\" to open Settings and enable it manually.",
+                                        color = Color(0xFFFF6600),
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        textAlign = TextAlign.Center,
+                                        modifier = Modifier.padding(horizontal = 32.dp)
+                                    )
+                                }
+                            }
+
+                            // Scanning indicator
+                            if (isScanning) {
                                 Spacer(modifier = Modifier.height(8.dp))
-                                Text(
-                                    text = "Permission permanently denied. Tap \"Scan Storage\" to open Settings and enable it manually.",
-                                    color = Color(0xFFFF6600),
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    textAlign = TextAlign.Center,
-                                    modifier = Modifier.padding(horizontal = 32.dp)
-                                )
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.Center,
+                                    modifier = Modifier.padding(8.dp)
+                                ) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(20.dp),
+                                        strokeWidth = 2.dp
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = "Scanning images...",
+                                        style = MaterialTheme.typography.bodyLarge
+                                    )
+                                }
                             }
                         }
 
                         Spacer(modifier = Modifier.height(16.dp))
 
-                        // Scanning indicator
-                        if (isScanning) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.Center,
-                                modifier = Modifier.padding(8.dp)
-                            ) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(20.dp),
-                                    strokeWidth = 2.dp
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = "Scanning images...",
-                                    style = MaterialTheme.typography.bodyLarge
-                                )
-                            }
-                        }
-
-                        // Image grid
+                        // ── Image grid ──
                         if (images.isNotEmpty()) {
                             LazyVerticalGrid(
                                 columns = GridCells.Fixed(3),
@@ -226,7 +247,6 @@ class MainActivity : ComponentActivity() {
                                             .combinedClickable(
                                                 onClick = {
                                                     if (selectionMode) {
-                                                        // Toggle selection
                                                         val updated = if (isSelected)
                                                             selectedImages - image.id
                                                         else
@@ -234,8 +254,6 @@ class MainActivity : ComponentActivity() {
 
                                                         selectedImages = updated
 
-                                                        // Auto-exit selection mode
-                                                        // when nothing is selected
                                                         if (updated.isEmpty()) {
                                                             selectionMode = false
                                                         }
@@ -247,7 +265,6 @@ class MainActivity : ComponentActivity() {
                                                 }
                                             )
                                     ) {
-                                        // Image
                                         AsyncImage(
                                             model = image.uri,
                                             contentDescription = null,
@@ -255,7 +272,6 @@ class MainActivity : ComponentActivity() {
                                             modifier = Modifier.fillMaxSize()
                                         )
 
-                                        // Overlay + checkmark — only on selected images
                                         if (isSelected) {
                                             Box(
                                                 modifier = Modifier
