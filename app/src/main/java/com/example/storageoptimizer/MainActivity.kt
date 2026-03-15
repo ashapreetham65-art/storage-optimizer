@@ -13,8 +13,13 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -39,6 +44,7 @@ data class ImageItem(
 
 class MainActivity : ComponentActivity() {
 
+    @OptIn(ExperimentalFoundationApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -50,6 +56,8 @@ class MainActivity : ComponentActivity() {
                 var permissionDenied by remember { mutableStateOf(false) }
                 var permanentlyDenied by remember { mutableStateOf(false) }
                 var isScanning by remember { mutableStateOf(false) }
+                var selectionMode by remember { mutableStateOf(false) }
+                var selectedImages by remember { mutableStateOf(setOf<Long>()) }
 
                 val requiredPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     Manifest.permission.READ_MEDIA_IMAGES
@@ -57,7 +65,6 @@ class MainActivity : ComponentActivity() {
                     Manifest.permission.READ_EXTERNAL_STORAGE
                 }
 
-                // Helper to avoid repeating coroutine block in two places
                 fun scanImages() {
                     isScanning = true
                     lifecycleScope.launch {
@@ -75,7 +82,7 @@ class MainActivity : ComponentActivity() {
                     if (isGranted) {
                         permissionDenied = false
                         permanentlyDenied = false
-                        scanImages()   // ← permission callback
+                        scanImages()
                     } else {
                         val canStillAsk = ActivityCompat.shouldShowRequestPermissionRationale(
                             this@MainActivity,
@@ -106,6 +113,16 @@ class MainActivity : ComponentActivity() {
                             style = MaterialTheme.typography.headlineMedium
                         )
 
+                        // Only visible during selection mode
+                        if (selectionMode) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "Selected: ${selectedImages.size}",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+
                         Spacer(modifier = Modifier.height(16.dp))
 
                         Button(
@@ -118,7 +135,7 @@ class MainActivity : ComponentActivity() {
                                 if (granted) {
                                     permissionDenied = false
                                     permanentlyDenied = false
-                                    scanImages()   // ← button click
+                                    scanImages()
                                 } else {
                                     val canAsk = ActivityCompat.shouldShowRequestPermissionRationale(
                                         this@MainActivity,
@@ -136,7 +153,7 @@ class MainActivity : ComponentActivity() {
                                     }
                                 }
                             },
-                            enabled = !isScanning  // prevent double-tap while scanning
+                            enabled = !isScanning
                         ) {
                             Text("Scan Storage")
                         }
@@ -190,7 +207,7 @@ class MainActivity : ComponentActivity() {
                         if (images.isNotEmpty()) {
                             LazyVerticalGrid(
                                 columns = GridCells.Fixed(3),
-                                modifier = Modifier.fillMaxSize(),
+                                modifier = Modifier.weight(1f),
                                 contentPadding = PaddingValues(4.dp),
                                 verticalArrangement = Arrangement.spacedBy(4.dp),
                                 horizontalArrangement = Arrangement.spacedBy(4.dp)
@@ -199,14 +216,63 @@ class MainActivity : ComponentActivity() {
                                     items = images,
                                     key = { it.id }
                                 ) { image ->
-                                    AsyncImage(
-                                        model = image.uri,
-                                        contentDescription = null,
-                                        contentScale = ContentScale.Crop,
+
+                                    val isSelected = selectedImages.contains(image.id)
+
+                                    Box(
                                         modifier = Modifier
                                             .aspectRatio(1f)
                                             .fillMaxWidth()
-                                    )
+                                            .combinedClickable(
+                                                onClick = {
+                                                    if (selectionMode) {
+                                                        // Toggle selection
+                                                        val updated = if (isSelected)
+                                                            selectedImages - image.id
+                                                        else
+                                                            selectedImages + image.id
+
+                                                        selectedImages = updated
+
+                                                        // Auto-exit selection mode
+                                                        // when nothing is selected
+                                                        if (updated.isEmpty()) {
+                                                            selectionMode = false
+                                                        }
+                                                    }
+                                                },
+                                                onLongClick = {
+                                                    selectionMode = true
+                                                    selectedImages = selectedImages + image.id
+                                                }
+                                            )
+                                    ) {
+                                        // Image
+                                        AsyncImage(
+                                            model = image.uri,
+                                            contentDescription = null,
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+
+                                        // Overlay + checkmark — only on selected images
+                                        if (isSelected) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxSize()
+                                                    .background(Color.Black.copy(alpha = 0.4f))
+                                            )
+                                            Icon(
+                                                imageVector = Icons.Filled.CheckCircle,
+                                                contentDescription = "Selected",
+                                                tint = Color.White,
+                                                modifier = Modifier
+                                                    .align(Alignment.TopEnd)
+                                                    .padding(6.dp)
+                                                    .size(22.dp)
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }
