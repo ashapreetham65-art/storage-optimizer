@@ -19,6 +19,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.*
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
@@ -26,6 +28,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextAlign
@@ -61,7 +64,7 @@ class MainActivity : ComponentActivity() {
                 var selectionMode by remember { mutableStateOf(false) }
                 var selectedImages by remember { mutableStateOf(setOf<Long>()) }
                 var viewerOpen by remember { mutableStateOf(false) }
-                var viewerIndex by remember { mutableIntStateOf(0) }
+                var viewerIndex by remember { mutableStateOf(0) }
 
                 val requiredPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     Manifest.permission.READ_MEDIA_IMAGES
@@ -239,7 +242,6 @@ class MainActivity : ComponentActivity() {
                                     verticalArrangement = Arrangement.spacedBy(4.dp),
                                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                                 ) {
-                                    // itemsIndexed gives us the index for free — no indexOf() needed
                                     itemsIndexed(
                                         items = images,
                                         key = { _, image -> image.id }
@@ -265,7 +267,6 @@ class MainActivity : ComponentActivity() {
                                                                 selectionMode = false
                                                             }
                                                         } else {
-                                                            // Open fullscreen viewer at this index
                                                             viewerIndex = index
                                                             viewerOpen = true
                                                         }
@@ -307,9 +308,12 @@ class MainActivity : ComponentActivity() {
 
                     } else {
 
-                        // ── Fullscreen Viewer ──
+                        // ── Fullscreen Pager Viewer ──
+                        val pagerState = rememberPagerState(
+                            initialPage = viewerIndex,
+                            pageCount = { images.size }
+                        )
 
-                        // Intercepts Android system back button to close viewer
                         BackHandler {
                             viewerOpen = false
                         }
@@ -319,21 +323,26 @@ class MainActivity : ComponentActivity() {
                                 .fillMaxSize()
                                 .background(Color.Black)
                         ) {
-                            AsyncImage(
-                                model = images[viewerIndex].uri,
-                                contentDescription = null,
-                                contentScale = ContentScale.Fit,
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .align(Alignment.Center)
-                            )
+                            HorizontalPager(
+                                state = pagerState,
+                                modifier = Modifier.fillMaxSize()
+                            ) { page ->
+                                AsyncImage(
+                                    model = images[page].uri,
+                                    contentDescription = null,
+                                    contentScale = ContentScale.Fit,
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .clipToBounds()
+                                )
+                            }
 
-                            // Back button — proper icon instead of plain Text
+                            // Back button
                             IconButton(
                                 onClick = { viewerOpen = false },
                                 modifier = Modifier
                                     .align(Alignment.TopStart)
-                                    .statusBarsPadding() // respects notch/status bar
+                                    .statusBarsPadding()
                                     .padding(8.dp)
                             ) {
                                 Icon(
@@ -342,6 +351,18 @@ class MainActivity : ComponentActivity() {
                                     tint = Color.White
                                 )
                             }
+
+                            // Image counter — e.g. "5 / 1181"
+                            // Updates live as user swipes
+                            Text(
+                                text = "${pagerState.currentPage + 1} / ${images.size}",
+                                color = Color.White,
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .statusBarsPadding()
+                                    .padding(16.dp)
+                            )
                         }
                     }
                 }
