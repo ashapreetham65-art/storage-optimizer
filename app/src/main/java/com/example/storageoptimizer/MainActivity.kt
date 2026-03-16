@@ -17,6 +17,9 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.*
 import androidx.compose.foundation.pager.HorizontalPager
@@ -30,6 +33,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -64,7 +69,7 @@ class MainActivity : ComponentActivity() {
                 var selectionMode by remember { mutableStateOf(false) }
                 var selectedImages by remember { mutableStateOf(setOf<Long>()) }
                 var viewerOpen by remember { mutableStateOf(false) }
-                var viewerIndex by remember { mutableStateOf(0) }
+                var viewerIndex by remember { mutableIntStateOf(0) }
 
                 val requiredPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     Manifest.permission.READ_MEDIA_IMAGES
@@ -119,7 +124,6 @@ class MainActivity : ComponentActivity() {
 
                             Spacer(modifier = Modifier.height(48.dp))
 
-                            // Header
                             if (!selectionMode) {
                                 Text(
                                     text = "Images found: ${images.size}",
@@ -186,7 +190,6 @@ class MainActivity : ComponentActivity() {
                                     Text("Scan Storage")
                                 }
 
-                                // Permission status messages
                                 when {
                                     permissionDenied -> {
                                         Spacer(modifier = Modifier.height(8.dp))
@@ -210,7 +213,6 @@ class MainActivity : ComponentActivity() {
                                     }
                                 }
 
-                                // Scanning indicator
                                 if (isScanning) {
                                     Spacer(modifier = Modifier.height(8.dp))
                                     Row(
@@ -233,7 +235,6 @@ class MainActivity : ComponentActivity() {
 
                             Spacer(modifier = Modifier.height(16.dp))
 
-                            // Image grid
                             if (images.isNotEmpty()) {
                                 LazyVerticalGrid(
                                     columns = GridCells.Fixed(3),
@@ -314,6 +315,8 @@ class MainActivity : ComponentActivity() {
                             pageCount = { images.size }
                         )
 
+                        var isZoomed by remember { mutableStateOf(false) }
+
                         BackHandler {
                             viewerOpen = false
                         }
@@ -325,8 +328,24 @@ class MainActivity : ComponentActivity() {
                         ) {
                             HorizontalPager(
                                 state = pagerState,
+                                userScrollEnabled = !isZoomed,
                                 modifier = Modifier.fillMaxSize()
                             ) { page ->
+
+                                var scale by remember { mutableFloatStateOf(1f) }
+                                var offsetX by remember { mutableFloatStateOf(0f) }
+                                var offsetY by remember { mutableFloatStateOf(0f) }
+
+                                // Reset zoom state when navigating away from this page
+                                LaunchedEffect(pagerState.currentPage) {
+                                    if (pagerState.currentPage != page) {
+                                        scale = 1f
+                                        offsetX = 0f
+                                        offsetY = 0f
+                                        isZoomed = false
+                                    }
+                                }
+
                                 AsyncImage(
                                     model = images[page].uri,
                                     contentDescription = null,
@@ -334,6 +353,73 @@ class MainActivity : ComponentActivity() {
                                     modifier = Modifier
                                         .fillMaxSize()
                                         .clipToBounds()
+                                        .pointerInput(page) {
+                                            awaitEachGesture {
+                                                // Wait for first finger down
+                                                var zoom = 1f
+                                                var panX = 0f
+                                                var panY = 0f
+                                                var pastTouchSlop = false
+
+                                                do {
+                                                    val event = awaitPointerEvent()
+                                                    val canceled = event.changes.any { it.isConsumed }
+                                                    if (canceled) break
+
+                                                    val zoomChange = event.calculateZoom()
+                                                    val panChange = event.calculatePan()
+                                                    val fingerCount = event.changes.count { it.pressed }
+
+                                                    if (fingerCount >= 2) {
+                                                        // Two fingers — handle pinch zoom
+                                                        zoom *= zoomChange
+                                                        panX += panChange.x
+                                                        panY += panChange.y
+
+                                                        if (!pastTouchSlop) {
+                                                            pastTouchSlop = true
+                                                        }
+
+                                                        val newScale = (scale * zoomChange).coerceIn(1f, 5f)
+                                                        scale = newScale
+                                                        isZoomed = scale > 1f
+
+                                                        if (scale > 1f) {
+                                                            val maxX = (size.width * (scale - 1f)) / 2f
+                                                            val maxY = (size.height * (scale - 1f)) / 2f
+                                                            offsetX = (offsetX + panChange.x).coerceIn(-maxX, maxX)
+                                                            offsetY = (offsetY + panChange.y).coerceIn(-maxY, maxY)
+                                                        } else {
+                                                            offsetX = 0f
+                                                            offsetY = 0f
+                                                            isZoomed = false
+                                                        }
+
+                                                        // Consume so pager doesn't also react
+                                                        event.changes.forEach { it.consume() }
+
+                                                    } else if (fingerCount == 1 && scale > 1f) {
+                                                        // One finger while zoomed — pan the image
+                                                        val maxX = (size.width * (scale - 1f)) / 2f
+                                                        val maxY = (size.height * (scale - 1f)) / 2f
+                                                        offsetX = (offsetX + panChange.x).coerceIn(-maxX, maxX)
+                                                        offsetY = (offsetY + panChange.y).coerceIn(-maxY, maxY)
+
+                                                        // Consume so pager doesn't swipe
+                                                        event.changes.forEach { it.consume() }
+                                                    }
+                                                    // One finger at scale == 1f → don't consume,
+                                                    // let pager handle the horizontal swipe naturally
+
+                                                } while (event.changes.any { it.pressed })
+                                            }
+                                        }
+                                        .graphicsLayer(
+                                            scaleX = scale,
+                                            scaleY = scale,
+                                            translationX = offsetX,
+                                            translationY = offsetY
+                                        )
                                 )
                             }
 
@@ -352,8 +438,7 @@ class MainActivity : ComponentActivity() {
                                 )
                             }
 
-                            // Image counter — e.g. "5 / 1181"
-                            // Updates live as user swipes
+                            // Image counter
                             Text(
                                 text = "${pagerState.currentPage + 1} / ${images.size}",
                                 color = Color.White,
