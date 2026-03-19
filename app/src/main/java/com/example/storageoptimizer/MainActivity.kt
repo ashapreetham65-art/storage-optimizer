@@ -44,12 +44,21 @@ import androidx.lifecycle.lifecycleScope
 import coil.compose.AsyncImage
 import com.example.storageoptimizer.ui.theme.StorageOptimizerTheme
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 
+// MD5 used here for speed — fast enough for 1000s of images,
+// and collision risk is acceptable for duplicate detection (not security)
 data class ImageItem(
     val id: Long,
-    val uri: Uri
+    val uri: Uri,
+    val hash: String? = null,
+    val size: Long = 0L
 )
 
 class MainActivity : ComponentActivity() {
@@ -69,7 +78,7 @@ class MainActivity : ComponentActivity() {
                 var selectionMode by remember { mutableStateOf(false) }
                 var selectedImages by remember { mutableStateOf(setOf<Long>()) }
                 var viewerOpen by remember { mutableStateOf(false) }
-                var viewerIndex by remember { mutableIntStateOf(0) }
+                var viewerIndex by remember { mutableStateOf(0) }
 
                 val requiredPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     Manifest.permission.READ_MEDIA_IMAGES
@@ -77,13 +86,36 @@ class MainActivity : ComponentActivity() {
                     Manifest.permission.READ_EXTERNAL_STORAGE
                 }
 
+                // Semaphore limits parallel hash jobs to 4 at a time
+                // Prevents spawning thousands of coroutines simultaneously
+                // which would overload CPU and cause thermal throttling
+                val hashSemaphore = remember { Semaphore(4) }
+
                 fun scanImages() {
+                    // Set before launch so button disables immediately
                     isScanning = true
                     lifecycleScope.launch {
-                        val result = withContext(Dispatchers.IO) {
+
+                        // Step 1 — load image list from MediaStore (includes size)
+                        val baseImages = withContext(Dispatchers.IO) {
                             loadImages()
                         }
-                        images = result
+
+                        // Step 2 — hash all images in parallel, max 4 at a time
+                        val hashedImages = withContext(Dispatchers.IO) {
+                            coroutineScope {
+                                baseImages.map { image ->
+                                    async {
+                                        hashSemaphore.withPermit {
+                                            val hash = calculateHash(image.uri)
+                                            image.copy(hash = hash)
+                                        }
+                                    }
+                                }.awaitAll()
+                            }
+                        }
+
+                        images = hashedImages
                         isScanning = false
                     }
                 }
@@ -332,11 +364,10 @@ class MainActivity : ComponentActivity() {
                                 modifier = Modifier.fillMaxSize()
                             ) { page ->
 
-                                var scale by remember { mutableFloatStateOf(1f) }
-                                var offsetX by remember { mutableFloatStateOf(0f) }
-                                var offsetY by remember { mutableFloatStateOf(0f) }
+                                var scale by remember { mutableStateOf(1f) }
+                                var offsetX by remember { mutableStateOf(0f) }
+                                var offsetY by remember { mutableStateOf(0f) }
 
-                                // Reset zoom state when navigating away from this page
                                 LaunchedEffect(pagerState.currentPage) {
                                     if (pagerState.currentPage != page) {
                                         scale = 1f
@@ -355,7 +386,6 @@ class MainActivity : ComponentActivity() {
                                         .clipToBounds()
                                         .pointerInput(page) {
                                             awaitEachGesture {
-                                                // Wait for first finger down
                                                 var zoom = 1f
                                                 var panX = 0f
                                                 var panY = 0f
@@ -371,7 +401,6 @@ class MainActivity : ComponentActivity() {
                                                     val fingerCount = event.changes.count { it.pressed }
 
                                                     if (fingerCount >= 2) {
-                                                        // Two fingers — handle pinch zoom
                                                         zoom *= zoomChange
                                                         panX += panChange.x
                                                         panY += panChange.y
@@ -395,21 +424,15 @@ class MainActivity : ComponentActivity() {
                                                             isZoomed = false
                                                         }
 
-                                                        // Consume so pager doesn't also react
                                                         event.changes.forEach { it.consume() }
 
                                                     } else if (fingerCount == 1 && scale > 1f) {
-                                                        // One finger while zoomed — pan the image
                                                         val maxX = (size.width * (scale - 1f)) / 2f
                                                         val maxY = (size.height * (scale - 1f)) / 2f
                                                         offsetX = (offsetX + panChange.x).coerceIn(-maxX, maxX)
                                                         offsetY = (offsetY + panChange.y).coerceIn(-maxY, maxY)
-
-                                                        // Consume so pager doesn't swipe
                                                         event.changes.forEach { it.consume() }
                                                     }
-                                                    // One finger at scale == 1f → don't consume,
-                                                    // let pager handle the horizontal swipe naturally
 
                                                 } while (event.changes.any { it.pressed })
                                             }
@@ -423,7 +446,6 @@ class MainActivity : ComponentActivity() {
                                 )
                             }
 
-                            // Back button
                             IconButton(
                                 onClick = { viewerOpen = false },
                                 modifier = Modifier
@@ -438,7 +460,6 @@ class MainActivity : ComponentActivity() {
                                 )
                             }
 
-                            // Image counter
                             Text(
                                 text = "${pagerState.currentPage + 1} / ${images.size}",
                                 color = Color.White,
@@ -458,7 +479,10 @@ class MainActivity : ComponentActivity() {
     private fun loadImages(): List<ImageItem> {
         val imageList = mutableListOf<ImageItem>()
 
-        val projection = arrayOf(MediaStore.Images.Media._ID)
+        val projection = arrayOf(
+            MediaStore.Images.Media._ID,
+            MediaStore.Images.Media.SIZE
+        )
 
         val cursor = contentResolver.query(
             MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
@@ -470,16 +494,36 @@ class MainActivity : ComponentActivity() {
 
         cursor?.use {
             val idColumn = it.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
+            val sizeColumn = it.getColumnIndexOrThrow(MediaStore.Images.Media.SIZE)
             while (it.moveToNext()) {
                 val id = it.getLong(idColumn)
+                val size = it.getLong(sizeColumn)
                 val uri = Uri.withAppendedPath(
                     MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
                     id.toString()
                 )
-                imageList.add(ImageItem(id, uri))
+                imageList.add(ImageItem(id, uri, null, size))
             }
         }
 
         return imageList
+    }
+
+    // MD5 hash of full image bytes — used to detect duplicates
+    // Runs on IO thread, returns null if file is unreadable
+    private fun calculateHash(uri: Uri): String? {
+        return try {
+            val inputStream = contentResolver.openInputStream(uri) ?: return null
+            val digest = java.security.MessageDigest.getInstance("MD5")
+            val buffer = ByteArray(8192)
+            var bytesRead: Int
+            while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+                digest.update(buffer, 0, bytesRead)
+            }
+            inputStream.close()
+            digest.digest().joinToString("") { "%02x".format(it) }
+        } catch (e: Exception) {
+            null
+        }
     }
 }
