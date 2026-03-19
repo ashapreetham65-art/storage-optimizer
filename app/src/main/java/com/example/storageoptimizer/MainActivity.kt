@@ -21,6 +21,7 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.*
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
@@ -52,8 +53,6 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 
-// MD5 used here for speed — fast enough for 1000s of images,
-// and collision risk is acceptable for duplicate detection (not security)
 data class ImageItem(
     val id: Long,
     val uri: Uri,
@@ -72,6 +71,7 @@ class MainActivity : ComponentActivity() {
             StorageOptimizerTheme {
 
                 var images by remember { mutableStateOf(listOf<ImageItem>()) }
+                var duplicateGroups by remember { mutableStateOf(listOf<List<ImageItem>>()) }
                 var permissionDenied by remember { mutableStateOf(false) }
                 var permanentlyDenied by remember { mutableStateOf(false) }
                 var isScanning by remember { mutableStateOf(false) }
@@ -79,6 +79,7 @@ class MainActivity : ComponentActivity() {
                 var selectedImages by remember { mutableStateOf(setOf<Long>()) }
                 var viewerOpen by remember { mutableStateOf(false) }
                 var viewerIndex by remember { mutableStateOf(0) }
+                var showDuplicates by remember { mutableStateOf(false) }
 
                 val requiredPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     Manifest.permission.READ_MEDIA_IMAGES
@@ -86,22 +87,16 @@ class MainActivity : ComponentActivity() {
                     Manifest.permission.READ_EXTERNAL_STORAGE
                 }
 
-                // Semaphore limits parallel hash jobs to 4 at a time
-                // Prevents spawning thousands of coroutines simultaneously
-                // which would overload CPU and cause thermal throttling
                 val hashSemaphore = remember { Semaphore(4) }
 
                 fun scanImages() {
-                    // Set before launch so button disables immediately
                     isScanning = true
+                    // Reset stale results immediately when a new scan starts
+                    duplicateGroups = emptyList()
                     lifecycleScope.launch {
-
-                        // Step 1 — load image list from MediaStore (includes size)
                         val baseImages = withContext(Dispatchers.IO) {
                             loadImages()
                         }
-
-                        // Step 2 — hash all images in parallel, max 4 at a time
                         val hashedImages = withContext(Dispatchers.IO) {
                             coroutineScope {
                                 baseImages.map { image ->
@@ -114,8 +109,9 @@ class MainActivity : ComponentActivity() {
                                 }.awaitAll()
                             }
                         }
-
                         images = hashedImages
+                        // Sort groups by size descending — largest duplicate groups shown first
+                        duplicateGroups = findDuplicateGroups(hashedImages)
                         isScanning = false
                     }
                 }
@@ -146,7 +142,6 @@ class MainActivity : ComponentActivity() {
 
                     if (!viewerOpen) {
 
-                        // ── Main Grid UI ──
                         Column(
                             modifier = Modifier
                                 .fillMaxSize()
@@ -156,6 +151,7 @@ class MainActivity : ComponentActivity() {
 
                             Spacer(modifier = Modifier.height(48.dp))
 
+                            // Header
                             if (!selectionMode) {
                                 Text(
                                     text = "Images found: ${images.size}",
@@ -175,12 +171,10 @@ class MainActivity : ComponentActivity() {
                                     ) {
                                         Text("Cancel")
                                     }
-
                                     Text(
                                         text = "Selected: ${selectedImages.size} / ${images.size}",
                                         style = MaterialTheme.typography.titleMedium
                                     )
-
                                     Spacer(modifier = Modifier.width(64.dp))
                                 }
                             }
@@ -263,75 +257,175 @@ class MainActivity : ComponentActivity() {
                                         )
                                     }
                                 }
+
+                                // Tab toggle — only shown after scan has results
+                                // Hidden during scanning and selection mode
+                                if (images.isNotEmpty() && !isScanning) {
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.Center
+                                    ) {
+                                        // Active tab gets filled button, inactive gets outlined
+                                        if (!showDuplicates) {
+                                            Button(
+                                                onClick = { showDuplicates = false },
+                                                modifier = Modifier.padding(horizontal = 4.dp)
+                                            ) {
+                                                Text("All Images")
+                                            }
+                                            OutlinedButton(
+                                                onClick = { showDuplicates = true },
+                                                modifier = Modifier.padding(horizontal = 4.dp)
+                                            ) {
+                                                Text("Duplicates")
+                                            }
+                                        } else {
+                                            OutlinedButton(
+                                                onClick = { showDuplicates = false },
+                                                modifier = Modifier.padding(horizontal = 4.dp)
+                                            ) {
+                                                Text("All Images")
+                                            }
+                                            Button(
+                                                onClick = { showDuplicates = true },
+                                                modifier = Modifier.padding(horizontal = 4.dp)
+                                            ) {
+                                                Text("Duplicates")
+                                            }
+                                        }
+                                    }
+                                }
                             }
 
-                            Spacer(modifier = Modifier.height(16.dp))
+                            Spacer(modifier = Modifier.height(8.dp))
 
-                            if (images.isNotEmpty()) {
-                                LazyVerticalGrid(
-                                    columns = GridCells.Fixed(3),
-                                    modifier = Modifier.weight(1f),
-                                    contentPadding = PaddingValues(4.dp),
-                                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                ) {
-                                    itemsIndexed(
-                                        items = images,
-                                        key = { _, image -> image.id }
-                                    ) { index, image ->
+                            // ── Grid / Duplicate view ──
+                            if (!showDuplicates) {
 
-                                        val isSelected = selectedImages.contains(image.id)
+                                // All images grid
+                                if (images.isNotEmpty()) {
+                                    LazyVerticalGrid(
+                                        columns = GridCells.Fixed(3),
+                                        modifier = Modifier.weight(1f),
+                                        contentPadding = PaddingValues(4.dp),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        itemsIndexed(
+                                            items = images,
+                                            key = { _, image -> image.id }
+                                        ) { index, image ->
 
-                                        Box(
-                                            modifier = Modifier
-                                                .aspectRatio(1f)
-                                                .fillMaxWidth()
-                                                .combinedClickable(
-                                                    onClick = {
-                                                        if (selectionMode) {
-                                                            val updated = if (isSelected)
-                                                                selectedImages - image.id
-                                                            else
-                                                                selectedImages + image.id
+                                            val isSelected = selectedImages.contains(image.id)
 
-                                                            selectedImages = updated
-
-                                                            if (updated.isEmpty()) {
-                                                                selectionMode = false
+                                            Box(
+                                                modifier = Modifier
+                                                    .aspectRatio(1f)
+                                                    .fillMaxWidth()
+                                                    .combinedClickable(
+                                                        onClick = {
+                                                            if (selectionMode) {
+                                                                val updated = if (isSelected)
+                                                                    selectedImages - image.id
+                                                                else
+                                                                    selectedImages + image.id
+                                                                selectedImages = updated
+                                                                if (updated.isEmpty()) {
+                                                                    selectionMode = false
+                                                                }
+                                                            } else {
+                                                                viewerIndex = index
+                                                                viewerOpen = true
                                                             }
-                                                        } else {
-                                                            viewerIndex = index
-                                                            viewerOpen = true
+                                                        },
+                                                        onLongClick = {
+                                                            selectionMode = true
+                                                            selectedImages = selectedImages + image.id
                                                         }
-                                                    },
-                                                    onLongClick = {
-                                                        selectionMode = true
-                                                        selectedImages = selectedImages + image.id
-                                                    }
+                                                    )
+                                            ) {
+                                                AsyncImage(
+                                                    model = image.uri,
+                                                    contentDescription = null,
+                                                    contentScale = ContentScale.Crop,
+                                                    modifier = Modifier.fillMaxSize()
                                                 )
-                                        ) {
-                                            AsyncImage(
-                                                model = image.uri,
-                                                contentDescription = null,
-                                                contentScale = ContentScale.Crop,
-                                                modifier = Modifier.fillMaxSize()
-                                            )
+                                                if (isSelected) {
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .fillMaxSize()
+                                                            .background(Color.Black.copy(alpha = 0.4f))
+                                                    )
+                                                    Icon(
+                                                        imageVector = Icons.Filled.CheckCircle,
+                                                        contentDescription = "Selected",
+                                                        tint = Color.White,
+                                                        modifier = Modifier
+                                                            .align(Alignment.TopEnd)
+                                                            .padding(6.dp)
+                                                            .size(22.dp)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
 
-                                            if (isSelected) {
-                                                Box(
-                                                    modifier = Modifier
-                                                        .fillMaxSize()
-                                                        .background(Color.Black.copy(alpha = 0.4f))
+                            } else {
+
+                                // Duplicates view
+                                if (duplicateGroups.isEmpty()) {
+                                    Text(
+                                        text = "No duplicates found",
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        modifier = Modifier.padding(16.dp)
+                                    )
+                                } else {
+                                    // Single LazyColumn — no nested scrollable containers
+                                    LazyColumn(modifier = Modifier.weight(1f)) {
+                                        duplicateGroups.forEachIndexed { groupIndex, group ->
+
+                                            // Group header
+                                            item(key = "header_$groupIndex") {
+                                                Text(
+                                                    text = "Group ${groupIndex + 1}  •  ${group.size} duplicates",
+                                                    style = MaterialTheme.typography.titleMedium,
+                                                    modifier = Modifier.padding(
+                                                        start = 8.dp,
+                                                        top = 12.dp,
+                                                        bottom = 4.dp
+                                                    )
                                                 )
-                                                Icon(
-                                                    imageVector = Icons.Filled.CheckCircle,
-                                                    contentDescription = "Selected",
-                                                    tint = Color.White,
-                                                    modifier = Modifier
-                                                        .align(Alignment.TopEnd)
-                                                        .padding(6.dp)
-                                                        .size(22.dp)
-                                                )
+                                            }
+
+                                            // Image row — chunked into rows of 3
+                                            // avoids nested LazyVerticalGrid entirely
+                                            val rows = group.chunked(3)
+                                            rows.forEachIndexed { rowIndex, rowImages ->
+                                                item(key = "group_${groupIndex}_row_$rowIndex") {
+                                                    Row(
+                                                        modifier = Modifier.fillMaxWidth(),
+                                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                                    ) {
+                                                        rowImages.forEach { image ->
+                                                            AsyncImage(
+                                                                model = image.uri,
+                                                                contentDescription = null,
+                                                                contentScale = ContentScale.Crop,
+                                                                modifier = Modifier
+                                                                    .weight(1f)
+                                                                    .aspectRatio(1f)
+                                                                    .padding(2.dp)
+                                                            )
+                                                        }
+                                                        // Fill empty slots in last row
+                                                        // so images don't stretch to fill width
+                                                        repeat(3 - rowImages.size) {
+                                                            Spacer(modifier = Modifier.weight(1f))
+                                                        }
+                                                    }
+                                                }
                                             }
                                         }
                                     }
@@ -386,11 +480,6 @@ class MainActivity : ComponentActivity() {
                                         .clipToBounds()
                                         .pointerInput(page) {
                                             awaitEachGesture {
-                                                var zoom = 1f
-                                                var panX = 0f
-                                                var panY = 0f
-                                                var pastTouchSlop = false
-
                                                 do {
                                                     val event = awaitPointerEvent()
                                                     val canceled = event.changes.any { it.isConsumed }
@@ -401,14 +490,6 @@ class MainActivity : ComponentActivity() {
                                                     val fingerCount = event.changes.count { it.pressed }
 
                                                     if (fingerCount >= 2) {
-                                                        zoom *= zoomChange
-                                                        panX += panChange.x
-                                                        panY += panChange.y
-
-                                                        if (!pastTouchSlop) {
-                                                            pastTouchSlop = true
-                                                        }
-
                                                         val newScale = (scale * zoomChange).coerceIn(1f, 5f)
                                                         scale = newScale
                                                         isZoomed = scale > 1f
@@ -423,7 +504,6 @@ class MainActivity : ComponentActivity() {
                                                             offsetY = 0f
                                                             isZoomed = false
                                                         }
-
                                                         event.changes.forEach { it.consume() }
 
                                                     } else if (fingerCount == 1 && scale > 1f) {
@@ -509,8 +589,6 @@ class MainActivity : ComponentActivity() {
         return imageList
     }
 
-    // MD5 hash of full image bytes — used to detect duplicates
-    // Runs on IO thread, returns null if file is unreadable
     private fun calculateHash(uri: Uri): String? {
         return try {
             val inputStream = contentResolver.openInputStream(uri) ?: return null
@@ -525,5 +603,16 @@ class MainActivity : ComponentActivity() {
         } catch (e: Exception) {
             null
         }
+    }
+
+    // Groups images by hash, keeps only groups with 2+ images
+    // Sorted by group size descending so largest duplicate groups appear first
+    private fun findDuplicateGroups(images: List<ImageItem>): List<List<ImageItem>> {
+        return images
+            .filter { it.hash != null }
+            .groupBy { it.hash }
+            .values
+            .filter { it.size > 1 }
+            .sortedByDescending { it.size }
     }
 }
