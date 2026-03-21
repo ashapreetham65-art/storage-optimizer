@@ -32,6 +32,8 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -66,13 +68,8 @@ data class ImageItem(
 
 class MainActivity : ComponentActivity() {
 
-    // Launcher for Android 11+ system delete confirmation dialog
     private lateinit var deleteRequestLauncher: ActivityResultLauncher<IntentSenderRequest>
-
-    // Holds ids pending deletion — used after system dialog confirms
     private var pendingDeleteIds: Set<Long> = emptySet()
-
-    // Callbacks set by the composable so the launcher result can update state
     private var onDeleteConfirmed: (() -> Unit)? = null
     private var onDeleteCancelled: (() -> Unit)? = null
 
@@ -81,14 +78,12 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        // Register delete launcher before setContent
         deleteRequestLauncher = registerForActivityResult(
             ActivityResultContracts.StartIntentSenderForResult()
         ) { result ->
             if (result.resultCode == RESULT_OK) {
                 onDeleteConfirmed?.invoke()
             } else {
-                // User pressed deny — reset deleting state, keep selections as-is
                 pendingDeleteIds = emptySet()
                 onDeleteCancelled?.invoke()
             }
@@ -103,17 +98,13 @@ class MainActivity : ComponentActivity() {
                 var permanentlyDenied by remember { mutableStateOf(false) }
                 var isScanning by remember { mutableStateOf(false) }
                 var isDeleting by remember { mutableStateOf(false) }
-
-                // Selection state for the main "All Images" grid
                 var selectionMode by remember { mutableStateOf(false) }
                 var selectedImages by remember { mutableStateOf(setOf<Long>()) }
-
-                // Separate selection state for the duplicates tab
-                // Keeps duplicate selections isolated from main grid selections
                 var duplicateSelectedIds by remember { mutableStateOf(setOf<Long>()) }
-
                 var viewerOpen by remember { mutableStateOf(false) }
                 var viewerIndex by remember { mutableStateOf(0) }
+                // Separate image list for viewer — can be full gallery or a single group
+                var viewerImages by remember { mutableStateOf(listOf<ImageItem>()) }
                 var showDuplicates by remember { mutableStateOf(false) }
 
                 val requiredPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -130,7 +121,6 @@ class MainActivity : ComponentActivity() {
 
                 fun autoSelectDuplicates(groups: List<List<ImageItem>>): Set<Long> {
                     return groups.flatMap { group ->
-                        // Sort by size descending — keep largest (best quality), select rest
                         group.sortedByDescending { it.size }.drop(1)
                     }.map { it.id }.toSet()
                 }
@@ -158,35 +148,25 @@ class MainActivity : ComponentActivity() {
                         images = hashedImages
                         val groups = rebuildDuplicateGroups(hashedImages)
                         duplicateGroups = groups
-                        // Auto-select all but the largest in each group
+                        // Auto-select runs ONCE after scan — never after user interaction
                         duplicateSelectedIds = autoSelectDuplicates(groups)
                         isScanning = false
                     }
                 }
 
-                // Wire up deny callback — just clears the pending state
                 onDeleteCancelled = {
                     isDeleting = false
                 }
 
-                // Wire up confirm callback — removes deleted ids, preserves manual deselections
                 onDeleteConfirmed = {
                     val deletedIds = pendingDeleteIds
                     val updatedImages = images.filter { it.id !in deletedIds }
                     images = updatedImages
-
-                    // Rebuild groups from remaining images
                     val updatedGroups = rebuildDuplicateGroups(updatedImages)
                     duplicateGroups = updatedGroups
-
-                    // Remove deleted ids from selection — do NOT auto-select again
-                    // This preserves any manual deselections the user made
                     duplicateSelectedIds = duplicateSelectedIds - deletedIds
-
-                    // Also clean up any selected ids that no longer exist in any group
                     val allGroupIds = updatedGroups.flatten().map { it.id }.toSet()
                     duplicateSelectedIds = duplicateSelectedIds.intersect(allGroupIds)
-
                     pendingDeleteIds = emptySet()
                     isDeleting = false
                 }
@@ -194,7 +174,6 @@ class MainActivity : ComponentActivity() {
                 fun deleteSelectedDuplicates() {
                     val toDelete = duplicateSelectedIds
                     if (toDelete.isEmpty()) return
-
                     pendingDeleteIds = toDelete
 
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -204,7 +183,6 @@ class MainActivity : ComponentActivity() {
                             )
                         }
                         val pendingIntent = MediaStore.createDeleteRequest(contentResolver, uris)
-                        // Only set isDeleting AFTER launching — avoids button flicker before dialog appears
                         deleteRequestLauncher.launch(
                             IntentSenderRequest.Builder(pendingIntent.intentSender).build()
                         )
@@ -260,25 +238,21 @@ class MainActivity : ComponentActivity() {
 
                             Spacer(modifier = Modifier.height(48.dp))
 
-                            // Header — only shows selection toolbar for main grid
                             if (!selectionMode || showDuplicates) {
                                 Text(
                                     text = "Images found: ${images.size}",
                                     style = MaterialTheme.typography.headlineMedium
                                 )
                             } else {
-                                // Selection toolbar — only active in "All Images" tab
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    TextButton(
-                                        onClick = {
-                                            selectionMode = false
-                                            selectedImages = emptySet()
-                                        }
-                                    ) {
+                                    TextButton(onClick = {
+                                        selectionMode = false
+                                        selectedImages = emptySet()
+                                    }) {
                                         Text("Cancel")
                                     }
                                     Text(
@@ -289,8 +263,6 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
 
-                            // Scan button + permission messages + scanning indicator
-                            // Hidden during main grid selection mode
                             if (!selectionMode || showDuplicates) {
 
                                 Spacer(modifier = Modifier.height(16.dp))
@@ -301,7 +273,6 @@ class MainActivity : ComponentActivity() {
                                             this@MainActivity,
                                             requiredPermission
                                         ) == PackageManager.PERMISSION_GRANTED
-
                                         if (granted) {
                                             permissionDenied = false
                                             permanentlyDenied = false
@@ -370,7 +341,6 @@ class MainActivity : ComponentActivity() {
                                     }
                                 }
 
-                                // Tab toggle
                                 if (images.isNotEmpty() && !isScanning) {
                                     Spacer(modifier = Modifier.height(8.dp))
                                     Row(
@@ -402,10 +372,8 @@ class MainActivity : ComponentActivity() {
 
                             Spacer(modifier = Modifier.height(8.dp))
 
-                            // ── Content area ──
                             if (!showDuplicates) {
 
-                                // All Images grid
                                 if (images.isNotEmpty()) {
                                     LazyVerticalGrid(
                                         columns = GridCells.Fixed(3),
@@ -437,6 +405,8 @@ class MainActivity : ComponentActivity() {
                                                                     selectionMode = false
                                                                 }
                                                             } else {
+                                                                // Open viewer with full image list
+                                                                viewerImages = images
                                                                 viewerIndex = index
                                                                 viewerOpen = true
                                                             }
@@ -476,7 +446,6 @@ class MainActivity : ComponentActivity() {
 
                             } else {
 
-                                // Duplicates tab
                                 if (duplicateGroups.isEmpty()) {
                                     Text(
                                         text = if (isScanning) "" else "No duplicates found",
@@ -484,27 +453,77 @@ class MainActivity : ComponentActivity() {
                                         modifier = Modifier.padding(16.dp)
                                     )
                                 } else {
-                                    // Scrollable duplicate groups
                                     LazyColumn(modifier = Modifier.weight(1f)) {
                                         duplicateGroups.forEachIndexed { groupIndex, group ->
 
-                                            // Group header with per-group summary
-                                            item(key = "header_$groupIndex") {
-                                                Text(
-                                                    text = "Group ${groupIndex + 1}  •  ${group.size} duplicates",
-                                                    style = MaterialTheme.typography.titleMedium,
-                                                    modifier = Modifier.padding(
-                                                        start = 8.dp,
-                                                        top = 12.dp,
-                                                        bottom = 4.dp
-                                                    )
-                                                )
+                                            // Sorted same order as displayed — largest first = keep
+                                            val sortedGroup = group.sortedByDescending { it.size }
+                                            val groupIds = sortedGroup.map { it.id }.toSet()
+                                            val anySelectedInGroup = groupIds.any {
+                                                it in duplicateSelectedIds
                                             }
 
-                                            // Image rows — 3 per row, no nested scroll
-                                            val rows = group
-                                                .sortedByDescending { it.size }
-                                                .chunked(3)
+                                            // Group header with eye + close buttons
+                                            item(key = "header_$groupIndex") {
+                                                Row(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .padding(
+                                                            start = 8.dp,
+                                                            top = 12.dp,
+                                                            bottom = 4.dp
+                                                        ),
+                                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    // Group label + safe indicator
+                                                    Column {
+                                                        Text(
+                                                            text = "Group ${groupIndex + 1}  •  ${group.size} duplicates",
+                                                            style = MaterialTheme.typography.titleMedium
+                                                        )
+                                                        if (!anySelectedInGroup) {
+                                                            Text(
+                                                                text = "No images selected for deletion",
+                                                                style = MaterialTheme.typography.labelSmall,
+                                                                color = Color(0xFF4CAF50)
+                                                            )
+                                                        }
+                                                    }
+
+                                                    Row {
+                                                        // 👁 Eye — open group in fullscreen viewer
+                                                        IconButton(onClick = {
+                                                            // Use sorted order so viewer matches grid
+                                                            viewerImages = sortedGroup
+                                                            viewerIndex = 0
+                                                            viewerOpen = true
+                                                        }) {
+                                                            Icon(
+                                                                imageVector = Icons.Filled.Search,
+                                                                contentDescription = "View group",
+                                                                tint = MaterialTheme.colorScheme.primary
+                                                            )
+                                                        }
+
+                                                        // ✖ Close — unselect all in group
+                                                        IconButton(onClick = {
+                                                            // Remove all group ids from selection
+                                                            // Does NOT trigger auto-select again
+                                                            duplicateSelectedIds = duplicateSelectedIds - groupIds
+                                                        }) {
+                                                            Icon(
+                                                                imageVector = Icons.Filled.Close,
+                                                                contentDescription = "Unselect group",
+                                                                tint = MaterialTheme.colorScheme.error
+                                                            )
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            // Image rows — 3 per row
+                                            val rows = sortedGroup.chunked(3)
                                             rows.forEachIndexed { rowIndex, rowImages ->
                                                 item(key = "group_${groupIndex}_row_$rowIndex") {
                                                     Row(
@@ -513,16 +532,13 @@ class MainActivity : ComponentActivity() {
                                                     ) {
                                                         rowImages.forEachIndexed { posInRow, image ->
                                                             val isSelected = duplicateSelectedIds.contains(image.id)
-                                                            // First image in first row = the "keep" image
-                                                            val isKeep = groupIndex >= 0 && rowIndex == 0 && posInRow == 0
+                                                            val isKeep = rowIndex == 0 && posInRow == 0
 
                                                             Box(
                                                                 modifier = Modifier
                                                                     .weight(1f)
                                                                     .aspectRatio(1f)
                                                                     .clickable {
-                                                                        // Toggle selection on tap
-                                                                        // Keep image can also be manually toggled
                                                                         val updated = if (isSelected)
                                                                             duplicateSelectedIds - image.id
                                                                         else
@@ -539,7 +555,6 @@ class MainActivity : ComponentActivity() {
                                                                         .padding(2.dp)
                                                                 )
 
-                                                                // Dark overlay on selected images
                                                                 if (isSelected) {
                                                                     Box(
                                                                         modifier = Modifier
@@ -559,7 +574,6 @@ class MainActivity : ComponentActivity() {
                                                                     )
                                                                 }
 
-                                                                // "Keep" badge on the image that will be kept
                                                                 if (isKeep) {
                                                                     Text(
                                                                         text = "Keep",
@@ -579,7 +593,6 @@ class MainActivity : ComponentActivity() {
                                                             }
                                                         }
 
-                                                        // Fill empty slots in last row
                                                         repeat(3 - rowImages.size) {
                                                             Spacer(modifier = Modifier.weight(1f))
                                                         }
@@ -589,7 +602,7 @@ class MainActivity : ComponentActivity() {
                                         }
                                     }
 
-                                    // Sticky delete button at bottom — always visible while scrolling
+                                    // Sticky delete button
                                     if (duplicateSelectedIds.isNotEmpty()) {
                                         Spacer(modifier = Modifier.height(8.dp))
                                         Button(
@@ -623,9 +636,10 @@ class MainActivity : ComponentActivity() {
                     } else {
 
                         // ── Fullscreen Pager Viewer ──
+                        // Uses viewerImages — either full gallery or a single group
                         val pagerState = rememberPagerState(
                             initialPage = viewerIndex,
-                            pageCount = { images.size }
+                            pageCount = { viewerImages.size }
                         )
 
                         var isZoomed by remember { mutableStateOf(false) }
@@ -659,7 +673,7 @@ class MainActivity : ComponentActivity() {
                                 }
 
                                 AsyncImage(
-                                    model = images[page].uri,
+                                    model = viewerImages[page].uri,
                                     contentDescription = null,
                                     contentScale = ContentScale.Fit,
                                     modifier = Modifier
@@ -680,7 +694,6 @@ class MainActivity : ComponentActivity() {
                                                         val newScale = (scale * zoomChange).coerceIn(1f, 5f)
                                                         scale = newScale
                                                         isZoomed = scale > 1f
-
                                                         if (scale > 1f) {
                                                             val maxX = (size.width * (scale - 1f)) / 2f
                                                             val maxY = (size.height * (scale - 1f)) / 2f
@@ -692,7 +705,6 @@ class MainActivity : ComponentActivity() {
                                                             isZoomed = false
                                                         }
                                                         event.changes.forEach { it.consume() }
-
                                                     } else if (fingerCount == 1 && scale > 1f) {
                                                         val maxX = (size.width * (scale - 1f)) / 2f
                                                         val maxY = (size.height * (scale - 1f)) / 2f
@@ -700,7 +712,6 @@ class MainActivity : ComponentActivity() {
                                                         offsetY = (offsetY + panChange.y).coerceIn(-maxY, maxY)
                                                         event.changes.forEach { it.consume() }
                                                     }
-
                                                 } while (event.changes.any { it.pressed })
                                             }
                                         }
@@ -727,8 +738,9 @@ class MainActivity : ComponentActivity() {
                                 )
                             }
 
+                            // Counter reflects current viewer list size, not total gallery
                             Text(
-                                text = "${pagerState.currentPage + 1} / ${images.size}",
+                                text = "${pagerState.currentPage + 1} / ${viewerImages.size}",
                                 color = Color.White,
                                 style = MaterialTheme.typography.bodyMedium,
                                 modifier = Modifier
