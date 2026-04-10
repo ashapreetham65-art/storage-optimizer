@@ -162,13 +162,52 @@ class MainActivity : ComponentActivity() {
                     val deletedIds = pendingDeleteIds
                     val updatedImages = images.filter { it.id !in deletedIds }
                     images = updatedImages
+
+                    // Clean up main grid selection
+                    selectedImages = selectedImages - deletedIds
+                    if (selectedImages.isEmpty()) selectionMode = false
+
+                    // Clean up duplicate groups and selection
                     val updatedGroups = rebuildDuplicateGroups(updatedImages)
                     duplicateGroups = updatedGroups
                     duplicateSelectedIds = duplicateSelectedIds - deletedIds
                     val allGroupIds = updatedGroups.flatten().map { it.id }.toSet()
                     duplicateSelectedIds = duplicateSelectedIds.intersect(allGroupIds)
+
                     pendingDeleteIds = emptySet()
                     isDeleting = false
+                }
+
+                fun deleteSelectedImages() {
+                    val toDelete = selectedImages
+                    if (toDelete.isEmpty()) return
+                    pendingDeleteIds = toDelete
+
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                        val uris = toDelete.map { id ->
+                            ContentUris.withAppendedId(
+                                MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id
+                            )
+                        }
+                        val pendingIntent = MediaStore.createDeleteRequest(contentResolver, uris)
+                        deleteRequestLauncher.launch(
+                            IntentSenderRequest.Builder(pendingIntent.intentSender).build()
+                        )
+                        isDeleting = true
+                    } else {
+                        isDeleting = true
+                        lifecycleScope.launch(Dispatchers.IO) {
+                            toDelete.forEach { id ->
+                                val uri = ContentUris.withAppendedId(
+                                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id
+                                )
+                                contentResolver.delete(uri, null, null)
+                            }
+                            withContext(Dispatchers.Main) {
+                                onDeleteConfirmed?.invoke()
+                            }
+                        }
+                    }
                 }
 
                 fun deleteSelectedDuplicates() {
@@ -244,6 +283,7 @@ class MainActivity : ComponentActivity() {
                                     style = MaterialTheme.typography.headlineMedium
                                 )
                             } else {
+                                // Selection toolbar — only active in "All Images" tab
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -260,6 +300,34 @@ class MainActivity : ComponentActivity() {
                                         style = MaterialTheme.typography.titleMedium
                                     )
                                     Spacer(modifier = Modifier.width(64.dp))
+                                }
+
+                                // Delete button — shown below toolbar when images are selected
+                                if (selectedImages.isNotEmpty()) {
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Button(
+                                        onClick = { deleteSelectedImages() },
+                                        enabled = !isDeleting,
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = MaterialTheme.colorScheme.error
+                                        ),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 8.dp)
+                                    ) {
+                                        if (isDeleting) {
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(18.dp),
+                                                strokeWidth = 2.dp,
+                                                color = Color.White
+                                            )
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                        }
+                                        Text(
+                                            if (isDeleting) "Deleting..."
+                                            else "Delete Selected (${selectedImages.size})"
+                                        )
+                                    }
                                 }
                             }
 
