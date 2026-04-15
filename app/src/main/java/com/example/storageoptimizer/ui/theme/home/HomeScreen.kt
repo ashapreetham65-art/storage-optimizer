@@ -1,4 +1,4 @@
-package com.example.storageoptimizer.ui.theme.home
+package com.example.storageoptimizer.ui.home
 
 import android.os.Environment
 import android.os.StatFs
@@ -9,10 +9,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Text
+import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -23,15 +20,15 @@ import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
-import com.example.storageoptimizer.data.ImageItem
-import com.example.storageoptimizer.data.ScanViewModel
+import com.example.storageoptimizer.data.MainViewModel
 import kotlin.math.min
 
-// ── Colours
+// Colours
 private val BackgroundTop    = Color(0xFF0F1422)
 private val BackgroundBottom = Color(0xFF1A1F35)
 private val ArcBlue          = Color(0xFF4FC3F7)
@@ -50,23 +47,28 @@ private val ReviewButton     = Color(0xFF2A3050)
 
 @Composable
 fun HomeScreen(
-    scanViewModel:    ScanViewModel,
-    previewImages:    List<ImageItem> = emptyList(),
-    imageCount:       Int             = 0,
-    duplicateCount:   Int             = 0,
-    reclaimableBytes: Long            = 0L,
-    onReviewClick:    () -> Unit
+    viewModel:    MainViewModel,
+    onReviewClick: () -> Unit
 ) {
-    val isScanning by scanViewModel.isScanning.collectAsState()
+    val context    = LocalContext.current
+    val isScanning by viewModel.isScanning.collectAsState()
+    val images     by viewModel.images.collectAsState()
+    val exactGroups by viewModel.exactGroups.collectAsState()
 
-    // Real device storage via StatFs
+    // Real device storage
     val storageStat  = remember { StatFs(Environment.getDataDirectory().path) }
     val totalBytes   = storageStat.totalBytes
     val freeBytes    = storageStat.availableBytes
     val usedBytes    = totalBytes - freeBytes
     val usedFraction = usedBytes.toFloat() / totalBytes.toFloat()
 
-    // Animate arc from 0 → real value on first draw
+    // Derived stats shown in the card
+    val imageCount       = images.size
+    val duplicateCount   = exactGroups.sumOf { it.size - 1 }   // total copies that can be deleted
+    val reclaimableBytes = viewModel.reclaimableBytes
+    val previewImages    = images.take(3)
+
+    // Arc animates to real value on first composition
     val arcProgress = remember { Animatable(0f) }
     LaunchedEffect(Unit) {
         arcProgress.animateTo(
@@ -97,9 +99,9 @@ fun HomeScreen(
 
             Spacer(modifier = Modifier.height(40.dp))
 
-            // ── Scan Storage — triggers the actual scan, stays on this screen
+            // Scan Storage button — triggers scan, stays on HomeScreen
             Button(
-                onClick = { scanViewModel.requestScan() },
+                onClick = { viewModel.scan(context.contentResolver) },
                 enabled = !isScanning,
                 shape   = RoundedCornerShape(16.dp),
                 colors  = ButtonDefaults.buttonColors(containerColor = ButtonBackground),
@@ -132,7 +134,11 @@ fun HomeScreen(
             Spacer(modifier = Modifier.height(8.dp))
 
             Text(
-                text     = if (isScanning) "Scanning your storage..." else "Last scanned just now",
+                text     = when {
+                    isScanning      -> "Scanning your storage..."
+                    imageCount > 0  -> "Tap Review to manage your images"
+                    else            -> "Tap Scan Storage to get started"
+                },
                 color    = TextSecondary,
                 fontSize = 13.sp
             )
@@ -144,18 +150,14 @@ fun HomeScreen(
                 duplicateCount   = duplicateCount,
                 reclaimableBytes = reclaimableBytes,
                 previewImages    = previewImages,
+                hasData          = viewModel.hasData(),
                 onReviewClick    = onReviewClick
             )
         }
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Circular arc gauge
-// Fix: startAngle = -90f  →  arc starts at 12 o'clock
-//      fullSweep  = 360f  →  full circle for 100% storage
-// Android drawArc measures 0° at 3 o'clock, so -90° = 12 o'clock.
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Storage gauge (unchanged visual, startAngle = -90 = 12 o'clock) ──────────
 @Composable
 private fun StorageGauge(
     progress:   Float,
@@ -175,13 +177,10 @@ private fun StorageGauge(
                 y = (size.height - diameter) / 2f
             )
 
-            // -90° = 12 o'clock; sweep clockwise to fill proportionally.
-            // 360° = fully filled ring (100% storage used).
             val startAngle  = -90f
             val fullSweep   = 360f
             val filledSweep = fullSweep * progress.coerceIn(0f, 1f)
 
-            // Track — full grey ring
             drawArc(
                 color      = Color(0xFF2A2F4A),
                 startAngle = startAngle,
@@ -193,8 +192,6 @@ private fun StorageGauge(
             )
 
             if (filledSweep > 0f) {
-
-                // Glow layer — wider, blurred, drawn behind the main arc
                 drawIntoCanvas { canvas ->
                     val glowPaint = Paint().apply {
                         asFrameworkPaint().apply {
@@ -210,23 +207,17 @@ private fun StorageGauge(
                             topLeft.x, topLeft.y,
                             topLeft.x + arcSize.width, topLeft.y + arcSize.height,
                             intArrayOf(GlowBlue.toArgb(), GlowPurple.toArgb()),
-                            null,
-                            android.graphics.Shader.TileMode.CLAMP
+                            null, android.graphics.Shader.TileMode.CLAMP
                         )
                     }
                     canvas.drawArc(
-                        left       = topLeft.x,
-                        top        = topLeft.y,
-                        right      = topLeft.x + arcSize.width,
-                        bottom     = topLeft.y + arcSize.height,
-                        startAngle = startAngle,
-                        sweepAngle = filledSweep,
-                        useCenter  = false,
-                        paint      = glowPaint
+                        left = topLeft.x, top = topLeft.y,
+                        right = topLeft.x + arcSize.width, bottom = topLeft.y + arcSize.height,
+                        startAngle = startAngle, sweepAngle = filledSweep,
+                        useCenter = false, paint = glowPaint
                     )
                 }
 
-                // Main filled arc — blue → purple gradient
                 drawIntoCanvas { canvas ->
                     val arcPaint = Paint().apply {
                         asFrameworkPaint().apply {
@@ -239,25 +230,19 @@ private fun StorageGauge(
                             topLeft.x, topLeft.y,
                             topLeft.x + arcSize.width, topLeft.y + arcSize.height,
                             intArrayOf(ArcBlue.toArgb(), ArcPurple.toArgb()),
-                            null,
-                            android.graphics.Shader.TileMode.CLAMP
+                            null, android.graphics.Shader.TileMode.CLAMP
                         )
                     }
                     canvas.drawArc(
-                        left       = topLeft.x,
-                        top        = topLeft.y,
-                        right      = topLeft.x + arcSize.width,
-                        bottom     = topLeft.y + arcSize.height,
-                        startAngle = startAngle,
-                        sweepAngle = filledSweep,
-                        useCenter  = false,
-                        paint      = arcPaint
+                        left = topLeft.x, top = topLeft.y,
+                        right = topLeft.x + arcSize.width, bottom = topLeft.y + arcSize.height,
+                        startAngle = startAngle, sweepAngle = filledSweep,
+                        useCenter = false, paint = arcPaint
                     )
                 }
             }
         }
 
-        // Centre text
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text(
                 text       = "${(progress * 100).toInt()}%",
@@ -275,15 +260,14 @@ private fun StorageGauge(
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Images summary card
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Images summary card ───────────────────────────────────────────────────────
 @Composable
 private fun ImagesCard(
     imageCount:       Int,
     duplicateCount:   Int,
     reclaimableBytes: Long,
-    previewImages:    List<ImageItem>,
+    previewImages:    List<com.example.storageoptimizer.data.ImageItem>,
+    hasData:          Boolean,
     onReviewClick:    () -> Unit
 ) {
     Box(
@@ -315,7 +299,7 @@ private fun ImagesCard(
                     )
                     if (reclaimableBytes > 0L) {
                         Text(
-                            text     = "${formatBytes(reclaimableBytes)} used",
+                            text     = "${formatBytes(reclaimableBytes)} reclaimable",
                             color    = TextSecondary,
                             fontSize = 14.sp
                         )
@@ -341,21 +325,19 @@ private fun ImagesCard(
                         if (reclaimableBytes > 0L)
                             append(" • Can free ${formatBytes(reclaimableBytes)}")
                     } else {
-                        append("Tap Review to scan your images")
+                        append("Tap Scan Storage to analyse your images")
                     }
                 }
                 Text(text = statsText, color = TextSecondary, fontSize = 13.sp)
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // Preview thumbnails — weight(1f) works fine here because
-                // this Row IS a RowScope context inside a normal @Composable Column.
                 if (previewImages.isNotEmpty()) {
                     Row(
                         modifier              = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        previewImages.take(3).forEach { image ->
+                        previewImages.forEach { image ->
                             AsyncImage(
                                 model              = image.uri,
                                 contentDescription = null,
@@ -366,7 +348,7 @@ private fun ImagesCard(
                                     .clip(RoundedCornerShape(12.dp))
                             )
                         }
-                        repeat(3 - previewImages.size.coerceAtMost(3)) {
+                        repeat(3 - previewImages.size) {
                             Spacer(modifier = Modifier.weight(1f))
                         }
                     }
@@ -378,13 +360,14 @@ private fun ImagesCard(
                     horizontalArrangement = Arrangement.End
                 ) {
                     Button(
-                        onClick        = onReviewClick,
-                        shape          = RoundedCornerShape(14.dp),
-                        colors         = ButtonDefaults.buttonColors(containerColor = ReviewButton),
+                        onClick  = onReviewClick,
+                        enabled  = hasData,       // greyed out until scan completes
+                        shape    = RoundedCornerShape(14.dp),
+                        colors   = ButtonDefaults.buttonColors(containerColor = ReviewButton),
                         contentPadding = PaddingValues(horizontal = 28.dp, vertical = 12.dp)
                     ) {
                         Text(
-                            text       = "Review",
+                            text       = if (hasData) "Review" else "Scan first",
                             color      = TextPrimary,
                             fontSize   = 15.sp,
                             fontWeight = FontWeight.SemiBold

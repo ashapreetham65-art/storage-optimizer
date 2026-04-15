@@ -1,9 +1,7 @@
 package com.example.storageoptimizer.ui.theme.gallery
 
-import android.Manifest
 import android.content.ContentUris
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
@@ -26,7 +24,6 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
@@ -37,64 +34,52 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.core.app.ActivityCompat
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import androidx.lifecycle.lifecycleScope
 import coil.compose.AsyncImage
 import com.example.storageoptimizer.data.ActiveTab
-import com.example.storageoptimizer.data.ImageItem
-import com.example.storageoptimizer.data.ScanViewModel
-import com.example.storageoptimizer.engine.ImageEngine
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
-import kotlinx.coroutines.withContext
+import com.example.storageoptimizer.data.MainViewModel
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun GalleryScreen(
-    scanViewModel:  ScanViewModel,
+    viewModel:      MainViewModel,
     onNavigateBack: () -> Unit
 ) {
     val context         = LocalContext.current
-    val lifecycleOwner  = LocalLifecycleOwner.current
     val contentResolver = context.contentResolver
 
-    // ---------- state ----------
-    var images           by remember { mutableStateOf(listOf<ImageItem>()) }
-    var exactGroups      by remember { mutableStateOf(listOf<List<ImageItem>>()) }
-    var similarGroups    by remember { mutableStateOf(listOf<List<ImageItem>>()) }
-    var permissionDenied  by remember { mutableStateOf(false) }
-    var permanentlyDenied by remember { mutableStateOf(false) }
-    var isScanning        by remember { mutableStateOf(false) }
-    var isDeleting        by remember { mutableStateOf(false) }
-    var selectionMode     by remember { mutableStateOf(false) }
-    var selectedImages    by remember { mutableStateOf(setOf<Long>()) }
-    var dupSelectedIds    by remember { mutableStateOf(setOf<Long>()) }
-    var groupSelectedIds  by remember { mutableStateOf(setOf<Long>()) }
-    var viewerOpen        by remember { mutableStateOf(false) }
-    var viewerIndex       by remember { mutableStateOf(0) }
-    var viewerImages      by remember { mutableStateOf(listOf<ImageItem>()) }
-    var activeTab         by remember { mutableStateOf(ActiveTab.ALL_IMAGES) }
+    // Read all data from ViewModel — no local scan state
+    val images        by viewModel.images.collectAsState()
+    val exactGroups   by viewModel.exactGroups.collectAsState()
+    val similarGroups by viewModel.similarGroups.collectAsState()
+    val isScanning    by viewModel.isScanning.collectAsState()
+
+    // UI-only state that belongs to this screen, not the ViewModel
+    var activeTab        by remember { mutableStateOf(ActiveTab.ALL_IMAGES) }
+    var selectionMode    by remember { mutableStateOf(false) }
+    var selectedImages   by remember { mutableStateOf(setOf<Long>()) }
+    var viewerOpen       by remember { mutableStateOf(false) }
+    var viewerIndex      by remember { mutableStateOf(0) }
+    var viewerImages     by remember { mutableStateOf(listOf<com.example.storageoptimizer.data.ImageItem>()) }
+
+    // Duplicates tab starts with the largest copy pre-selected to keep,
+    // rest auto-selected for deletion. Re-computed when exactGroups changes.
+    var dupSelectedIds   by remember { mutableStateOf(setOf<Long>()) }
+    var groupSelectedIds by remember { mutableStateOf(setOf<Long>()) }
+
+    // Sync auto-selection whenever exactGroups updates (after scan or delete)
+    LaunchedEffect(exactGroups) {
+        dupSelectedIds = viewModel.autoSelectedDuplicateIds()
+    }
+
+    // Bridge Activity-level delete result back into ViewModel
     var pendingDeleteIds  by remember { mutableStateOf(setOf<Long>()) }
     var deleteConfirmFlag by remember { mutableStateOf(false) }
     var deleteCancelFlag  by remember { mutableStateOf(false) }
+    var isDeleting        by remember { mutableStateOf(false) }
 
-    val requiredPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
-        Manifest.permission.READ_MEDIA_IMAGES
-    else
-        Manifest.permission.READ_EXTERNAL_STORAGE
+    // ---------- STEP 1: launchers ----------
 
-    val hashSemaphore = remember { Semaphore(4) }
-
-    // ---------- STEP 1: launchers (must be at composable top-level, before any fun that uses them) ----------
-
-    // deleteRequestLauncher must be declared before launchDelete() which captures it.
     val deleteRequestLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartIntentSenderForResult()
     ) { result ->
@@ -109,77 +94,17 @@ fun GalleryScreen(
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { isGranted ->
-        if (isGranted) {
-            permissionDenied  = false
-            permanentlyDenied = false
-            // scanImages() called below after it is defined -- permissionLauncher
-            // result is async so by the time this lambda runs, scanImages is defined.
-        } else {
-            val canStillAsk = ActivityCompat.shouldShowRequestPermissionRationale(
-                context as androidx.activity.ComponentActivity, requiredPermission
-            )
-            if (canStillAsk) { permissionDenied = true;  permanentlyDenied = false }
-            else             { permissionDenied = false; permanentlyDenied = true  }
-        }
+        if (isGranted) viewModel.scan(contentResolver)
     }
 
-    // ---------- STEP 2: local functions (use launchers and state declared above) ----------
-
-    fun autoSelectDuplicates(groups: List<List<ImageItem>>): Set<Long> =
-        groups.flatMap { group ->
-            group.sortedByDescending { it.size }.drop(1)
-        }.map { it.id }.toSet()
-
-    fun scanImages() {
-        isScanning       = true
-        exactGroups      = emptyList()
-        similarGroups    = emptyList()
-        dupSelectedIds   = emptySet()
-        groupSelectedIds = emptySet()
-
-        lifecycleOwner.lifecycleScope.launch {
-            val baseImages = withContext(Dispatchers.IO) {
-                ImageEngine.loadImages(contentResolver)
-            }
-            val hashedImages = withContext(Dispatchers.IO) {
-                coroutineScope {
-                    baseImages.map { image ->
-                        async {
-                            hashSemaphore.withPermit {
-                                image.copy(
-                                    hash = ImageEngine.calculatePerceptualHash(
-                                        image.uri, contentResolver
-                                    )
-                                )
-                            }
-                        }
-                    }.awaitAll()
-                }
-            }
-            images = hashedImages
-
-            val exact = withContext(Dispatchers.IO) {
-                ImageEngine.findGroupsByThreshold(hashedImages, threshold = 0)
-            }
-            val similar = withContext(Dispatchers.IO) {
-                ImageEngine.findGroupsByThreshold(hashedImages, threshold = 5)
-            }
-
-            exactGroups    = exact
-            similarGroups  = similar
-            dupSelectedIds = autoSelectDuplicates(exact)
-            isScanning     = false
-        }
-    }
+    // ---------- STEP 2: local delete functions ----------
 
     fun launchDelete(toDelete: Set<Long>) {
         if (toDelete.isEmpty()) return
         pendingDeleteIds = toDelete
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             val uris = toDelete.map { id ->
-                ContentUris.withAppendedId(
-                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id
-                )
+                ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
             }
             val pi = MediaStore.createDeleteRequest(contentResolver, uris)
             deleteRequestLauncher.launch(
@@ -188,68 +113,34 @@ fun GalleryScreen(
             isDeleting = true
         } else {
             isDeleting = true
-            lifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
-                toDelete.forEach { id ->
-                    contentResolver.delete(
-                        ContentUris.withAppendedId(
-                            MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id
-                        ), null, null
-                    )
-                }
-                withContext(Dispatchers.Main) { deleteConfirmFlag = true }
+            viewModel.viewModelScopeDelete(toDelete, contentResolver) {
+                deleteConfirmFlag = true
             }
         }
     }
 
-    // ---------- STEP 3: effects (use functions declared above) ----------
+    // ---------- STEP 3: effects ----------
 
-    // Push isScanning to ViewModel so HomeScreen spinner stays in sync
-    LaunchedEffect(isScanning) {
-        scanViewModel.setScanningState(isScanning)
-    }
-
-    // React to scan request from HomeScreen "Scan Storage" button
-    val scanRequested by scanViewModel.scanRequested.collectAsState()
-    LaunchedEffect(scanRequested) {
-        if (!scanRequested) return@LaunchedEffect
-        scanViewModel.consumeScanRequest()
-        val granted = ContextCompat.checkSelfPermission(
-            context, requiredPermission
-        ) == PackageManager.PERMISSION_GRANTED
-        if (granted) scanImages()
-    }
-
-    // Delete confirmed by system dialog
     LaunchedEffect(deleteConfirmFlag) {
         if (!deleteConfirmFlag) return@LaunchedEffect
         deleteConfirmFlag = false
 
-        val deletedIds    = pendingDeleteIds
-        val updatedImages = images.filter { it.id !in deletedIds }
-        images = updatedImages
+        val deletedIds = pendingDeleteIds
 
-        selectedImages = selectedImages - deletedIds
+        // Update UI-only selection state
+        selectedImages   = selectedImages - deletedIds
         if (selectedImages.isEmpty()) selectionMode = false
-
-        val newExact = withContext(Dispatchers.IO) {
-            ImageEngine.findGroupsByThreshold(updatedImages, threshold = 0)
-        }
-        val newSimilar = withContext(Dispatchers.IO) {
-            ImageEngine.findGroupsByThreshold(updatedImages, threshold = 5)
-        }
-        exactGroups   = newExact
-        similarGroups = newSimilar
-
-        dupSelectedIds = (dupSelectedIds - deletedIds)
-            .intersect(newExact.flatten().map { it.id }.toSet())
+        dupSelectedIds   = (dupSelectedIds - deletedIds)
+            .intersect(viewModel.exactGroups.value.flatten().map { it.id }.toSet())
         groupSelectedIds = (groupSelectedIds - deletedIds)
-            .intersect(newSimilar.flatten().map { it.id }.toSet())
+            .intersect(viewModel.similarGroups.value.flatten().map { it.id }.toSet())
 
+        // Delegate actual data update to ViewModel
+        viewModel.onDeleteConfirmed(deletedIds)
         pendingDeleteIds = emptySet()
         isDeleting       = false
     }
 
-    // Delete cancelled
     LaunchedEffect(deleteCancelFlag) {
         if (!deleteCancelFlag) return@LaunchedEffect
         deleteCancelFlag = false
@@ -306,9 +197,9 @@ fun GalleryScreen(
                         ) {
                             if (isDeleting) {
                                 CircularProgressIndicator(
-                                    modifier    = Modifier.size(18.dp),
+                                    modifier = Modifier.size(18.dp),
                                     strokeWidth = 2.dp,
-                                    color       = Color.White
+                                    color = Color.White
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
                             }
@@ -324,54 +215,21 @@ fun GalleryScreen(
 
                     Spacer(modifier = Modifier.height(16.dp))
 
+                    // "Refresh" replaces the old "Scan Storage" — re-runs full scan
                     Button(
-                        onClick = {
-                            val granted = ContextCompat.checkSelfPermission(
-                                context, requiredPermission
-                            ) == PackageManager.PERMISSION_GRANTED
-                            if (granted) {
-                                permissionDenied  = false
-                                permanentlyDenied = false
-                                scanImages()
-                            } else {
-                                val canAsk = ActivityCompat.shouldShowRequestPermissionRationale(
-                                    context as androidx.activity.ComponentActivity,
-                                    requiredPermission
-                                )
-                                if (canAsk || !permanentlyDenied) {
-                                    permissionLauncher.launch(requiredPermission)
-                                } else {
-                                    context.startActivity(
-                                        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                                            data = Uri.fromParts("package", context.packageName, null)
-                                        }
-                                    )
-                                }
-                            }
-                        },
-                        enabled = !isScanning && !isDeleting
-                    ) { Text("Scan Storage") }
-
-                    when {
-                        permissionDenied -> {
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                text      = "No permission granted. Tap \"Scan Storage\" to try again.",
-                                color     = Color.Red,
-                                style     = MaterialTheme.typography.bodyMedium,
-                                textAlign = TextAlign.Center,
-                                modifier  = Modifier.padding(horizontal = 32.dp)
+                        onClick  = { viewModel.scan(contentResolver) },
+                        enabled  = !isScanning && !isDeleting,
+                    ) {
+                        if (isScanning) {
+                            CircularProgressIndicator(
+                                modifier    = Modifier.size(16.dp),
+                                strokeWidth = 2.dp,
+                                color       = Color.White
                             )
-                        }
-                        permanentlyDenied -> {
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                text      = "Permission permanently denied. Tap \"Scan Storage\" to open Settings.",
-                                color     = Color(0xFFFF6600),
-                                style     = MaterialTheme.typography.bodyMedium,
-                                textAlign = TextAlign.Center,
-                                modifier  = Modifier.padding(horizontal = 32.dp)
-                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Scanning...")
+                        } else {
+                            Text("Refresh")
                         }
                     }
 

@@ -5,18 +5,17 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
-import com.example.storageoptimizer.data.ScanViewModel
+import com.example.storageoptimizer.data.MainViewModel
 import com.example.storageoptimizer.ui.theme.gallery.GalleryScreen
-import com.example.storageoptimizer.ui.theme.home.HomeScreen
+import com.example.storageoptimizer.ui.home.HomeScreen
 
 @Composable
 fun AppNavGraph(navController: NavHostController) {
 
-    // Single ViewModel instance shared across both screens.
-    // viewModel() with no owner defaults to the NavBackStackEntry's closest
-    // ViewModelStoreOwner — using the NavController's parent activity scope
-    // ensures the same instance is returned for both destinations.
-    val scanViewModel: ScanViewModel = viewModel()
+    // viewModel() here is scoped to the Activity's ViewModelStore —
+    // same instance is returned for every composable call in this tree,
+    // so HomeScreen and GalleryScreen always share the same ViewModel.
+    val viewModel: MainViewModel = viewModel()
 
     NavHost(
         navController    = navController,
@@ -24,14 +23,21 @@ fun AppNavGraph(navController: NavHostController) {
     ) {
         composable(Routes.HOME) {
             HomeScreen(
-                scanViewModel = scanViewModel,
-                onReviewClick = { navController.navigate(Routes.GALLERY) }
+                viewModel     = viewModel,
+                onReviewClick = {
+                    // Only navigate if a scan has already produced data.
+                    // This prevents the Gallery from showing an empty state
+                    // that looks like a bug — user must scan first.
+                    if (viewModel.hasData()) {
+                        navController.navigate(Routes.GALLERY)
+                    }
+                }
             )
         }
 
         composable(Routes.GALLERY) {
             GalleryScreen(
-                scanViewModel  = scanViewModel,
+                viewModel      = viewModel,
                 onNavigateBack = { navController.popBackStack() }
             )
         }
