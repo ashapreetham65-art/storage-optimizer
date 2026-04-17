@@ -1,7 +1,15 @@
 package com.example.storageoptimizer.ui.home
 
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
 import android.os.Environment
 import android.os.StatFs
+import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
@@ -24,6 +32,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import coil.compose.AsyncImage
 import com.example.storageoptimizer.data.MainViewModel
 import kotlin.math.min
@@ -47,13 +57,14 @@ private val ReviewButton     = Color(0xFF2A3050)
 
 @Composable
 fun HomeScreen(
-    viewModel:    MainViewModel,
+    viewModel:     MainViewModel,
     onReviewClick: () -> Unit
 ) {
-    val context    = LocalContext.current
-    val isScanning by viewModel.isScanning.collectAsState()
-    val images     by viewModel.images.collectAsState()
-    val exactGroups by viewModel.exactGroups.collectAsState()
+    val context         = LocalContext.current
+    val isScanning      by viewModel.isScanning.collectAsState()
+    val isLoadingFromDb by viewModel.isLoadingFromDb.collectAsState()
+    val images          by viewModel.images.collectAsState()
+    val exactGroups     by viewModel.exactGroups.collectAsState()
 
     // Real device storage
     val storageStat  = remember { StatFs(Environment.getDataDirectory().path) }
@@ -62,13 +73,13 @@ fun HomeScreen(
     val usedBytes    = totalBytes - freeBytes
     val usedFraction = usedBytes.toFloat() / totalBytes.toFloat()
 
-    // Derived stats shown in the card
+    // Derived stats for the card
     val imageCount       = images.size
-    val duplicateCount   = exactGroups.sumOf { it.size - 1 }   // total copies that can be deleted
+    val duplicateCount   = exactGroups.sumOf { it.size - 1 }
     val reclaimableBytes = viewModel.reclaimableBytes
     val previewImages    = images.take(3)
 
-    // Arc animates to real value on first composition
+    // Arc animates to real value on first draw
     val arcProgress = remember { Animatable(0f) }
     LaunchedEffect(Unit) {
         arcProgress.animateTo(
@@ -77,6 +88,53 @@ fun HomeScreen(
         )
     }
 
+    // ── Permission setup ────────────────────────────────────────────────────
+    // The permission needed depends on Android version.
+    val requiredPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
+        Manifest.permission.READ_MEDIA_IMAGES
+    else
+        Manifest.permission.READ_EXTERNAL_STORAGE
+
+    // If permission is granted after the dialog, start the scan immediately.
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            viewModel.scan(context.contentResolver)
+        }
+        // If denied: button stays enabled so user can tap again.
+        // We don't show an error here — GalleryScreen handles the detailed
+        // permission messaging since it has the full settings-redirect flow.
+    }
+
+    // Helper called by the Scan Storage button — checks permission first.
+    fun handleScanClick() {
+        val granted = ContextCompat.checkSelfPermission(
+            context, requiredPermission
+        ) == PackageManager.PERMISSION_GRANTED
+
+        if (granted) {
+            viewModel.scan(context.contentResolver)
+        } else {
+            // Check whether we can still ask, or if the user has permanently denied
+            val canAsk = ActivityCompat.shouldShowRequestPermissionRationale(
+                context as androidx.activity.ComponentActivity,
+                requiredPermission
+            )
+            if (canAsk) {
+                // Show the system permission dialog
+                permissionLauncher.launch(requiredPermission)
+            } else {
+                // First time asking OR permanently denied — try the dialog first.
+                // If it's permanently denied the dialog won't appear and nothing
+                // happens; on the next tap we could redirect to Settings, but
+                // keeping it simple for V9: GalleryScreen handles the full flow.
+                permissionLauncher.launch(requiredPermission)
+            }
+        }
+    }
+
+    // ── UI ──────────────────────────────────────────────────────────────────
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -99,10 +157,10 @@ fun HomeScreen(
 
             Spacer(modifier = Modifier.height(40.dp))
 
-            // Scan Storage button — triggers scan, stays on HomeScreen
+            // Scan Storage button — checks permission, then triggers scan
             Button(
-                onClick = { viewModel.scan(context.contentResolver) },
-                enabled = !isScanning,
+                onClick = { handleScanClick() },
+                enabled = !isScanning && !isLoadingFromDb,
                 shape   = RoundedCornerShape(16.dp),
                 colors  = ButtonDefaults.buttonColors(containerColor = ButtonBackground),
                 contentPadding = PaddingValues(horizontal = 48.dp, vertical = 16.dp),
@@ -134,7 +192,8 @@ fun HomeScreen(
             Spacer(modifier = Modifier.height(8.dp))
 
             Text(
-                text     = when {
+                text = when {
+                    isLoadingFromDb -> "Loading saved data..."
                     isScanning      -> "Scanning your storage..."
                     imageCount > 0  -> "Tap Review to manage your images"
                     else            -> "Tap Scan Storage to get started"
@@ -157,7 +216,7 @@ fun HomeScreen(
     }
 }
 
-// ── Storage gauge (unchanged visual, startAngle = -90 = 12 o'clock) ──────────
+// ── Storage gauge (startAngle = -90 = 12 o'clock) ────────────────────────────
 @Composable
 private fun StorageGauge(
     progress:   Float,
@@ -360,10 +419,10 @@ private fun ImagesCard(
                     horizontalArrangement = Arrangement.End
                 ) {
                     Button(
-                        onClick  = onReviewClick,
-                        enabled  = hasData,       // greyed out until scan completes
-                        shape    = RoundedCornerShape(14.dp),
-                        colors   = ButtonDefaults.buttonColors(containerColor = ReviewButton),
+                        onClick        = onReviewClick,
+                        enabled        = hasData,
+                        shape          = RoundedCornerShape(14.dp),
+                        colors         = ButtonDefaults.buttonColors(containerColor = ReviewButton),
                         contentPadding = PaddingValues(horizontal = 28.dp, vertical = 12.dp)
                     ) {
                         Text(

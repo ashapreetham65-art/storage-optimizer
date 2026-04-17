@@ -1,21 +1,33 @@
 package com.example.storageoptimizer.navigation
 
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import com.example.storageoptimizer.data.ImageRepository
 import com.example.storageoptimizer.data.MainViewModel
+import com.example.storageoptimizer.data.local.AppDatabase
 import com.example.storageoptimizer.ui.theme.gallery.GalleryScreen
 import com.example.storageoptimizer.ui.home.HomeScreen
 
 @Composable
 fun AppNavGraph(navController: NavHostController) {
 
-    // viewModel() here is scoped to the Activity's ViewModelStore —
-    // same instance is returned for every composable call in this tree,
-    // so HomeScreen and GalleryScreen always share the same ViewModel.
-    val viewModel: MainViewModel = viewModel()
+    val context = LocalContext.current
+
+    // Build the DB singleton and wire it through to the ViewModel.
+    // AppDatabase.getInstance() uses double-checked locking so this is safe
+    // to call on every recomposition — it returns the existing instance.
+    val db         = AppDatabase.getInstance(context)
+    val repository = ImageRepository(db.imageDao())
+
+    // viewModel() scoped to the Activity — same instance returned for every
+    // composable destination, so HomeScreen and GalleryScreen share state.
+    val viewModel: MainViewModel = viewModel(
+        factory = MainViewModel.Factory(repository)
+    )
 
     NavHost(
         navController    = navController,
@@ -25,9 +37,6 @@ fun AppNavGraph(navController: NavHostController) {
             HomeScreen(
                 viewModel     = viewModel,
                 onReviewClick = {
-                    // Only navigate if a scan has already produced data.
-                    // This prevents the Gallery from showing an empty state
-                    // that looks like a bug — user must scan first.
                     if (viewModel.hasData()) {
                         navController.navigate(Routes.GALLERY)
                     }
