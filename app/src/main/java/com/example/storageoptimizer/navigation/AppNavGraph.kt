@@ -1,5 +1,6 @@
 package com.example.storageoptimizer.navigation
 
+import android.content.Context
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -22,11 +23,12 @@ fun AppNavGraph(navController: NavHostController) {
     // to call on every recomposition — it returns the existing instance.
     val db         = AppDatabase.getInstance(context)
     val repository = ImageRepository(db.imageDao())
+    val prefs      = context.getSharedPreferences("storage_optimizer_prefs", Context.MODE_PRIVATE)
 
     // viewModel() scoped to the Activity — same instance returned for every
     // composable destination, so HomeScreen and GalleryScreen share state.
     val viewModel: MainViewModel = viewModel(
-        factory = MainViewModel.Factory(repository)
+        factory = MainViewModel.Factory(repository, prefs)
     )
 
     NavHost(

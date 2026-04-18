@@ -65,6 +65,7 @@ fun HomeScreen(
     val isLoadingFromDb by viewModel.isLoadingFromDb.collectAsState()
     val images          by viewModel.images.collectAsState()
     val exactGroups     by viewModel.exactGroups.collectAsState()
+    val lastScannedAt   by viewModel.lastScannedAt.collectAsState()
 
     // Real device storage
     val storageStat  = remember { StatFs(Environment.getDataDirectory().path) }
@@ -100,7 +101,8 @@ fun HomeScreen(
         contract = ActivityResultContracts.RequestPermission()
     ) { isGranted ->
         if (isGranted) {
-            viewModel.scan(context.contentResolver)
+            if (viewModel.hasData()) viewModel.refresh(context.contentResolver)
+            else                     viewModel.scan(context.contentResolver)
         }
         // If denied: button stays enabled so user can tap again.
         // We don't show an error here — GalleryScreen handles the detailed
@@ -114,7 +116,8 @@ fun HomeScreen(
         ) == PackageManager.PERMISSION_GRANTED
 
         if (granted) {
-            viewModel.scan(context.contentResolver)
+            if (viewModel.hasData()) viewModel.refresh(context.contentResolver)
+            else                     viewModel.scan(context.contentResolver)
         } else {
             // Check whether we can still ask, or if the user has permanently denied
             val canAsk = ActivityCompat.shouldShowRequestPermissionRationale(
@@ -191,12 +194,14 @@ fun HomeScreen(
 
             Spacer(modifier = Modifier.height(8.dp))
 
+            val scannedAt = lastScannedAt //get the value
             Text(
                 text = when {
-                    isLoadingFromDb -> "Loading saved data..."
-                    isScanning      -> "Scanning your storage..."
-                    imageCount > 0  -> "Tap Review to manage your images"
-                    else            -> "Tap Scan Storage to get started"
+                    isLoadingFromDb       -> "Loading saved data..."
+                    isScanning            -> "Scanning your storage..."
+                    scannedAt != null -> "Last scanned ${timeAgo(scannedAt)}"
+                    imageCount > 0        -> "Data loaded — tap Scan Storage to refresh"
+                    else                  -> "Tap Scan Storage to get started"
                 },
                 color    = TextSecondary,
                 fontSize = 13.sp
@@ -435,6 +440,27 @@ private fun ImagesCard(
                 }
             }
         }
+    }
+}
+
+// Returns a short human-readable string like "just now", "5 min ago",
+// "2 hours ago", "3 days ago". Input is epoch milliseconds.
+private fun timeAgo(epochMs: Long): String {
+    val diffMs      = System.currentTimeMillis() - epochMs
+    val diffSeconds = diffMs / 1000
+    val diffMinutes = diffSeconds / 60
+    val diffHours   = diffMinutes / 60
+    val diffDays    = diffHours / 24
+
+    return when {
+        diffSeconds < 10          -> "just now"
+        diffSeconds < 60          -> "${diffSeconds}s ago"
+        diffMinutes == 1L         -> "1 min ago"
+        diffMinutes < 60          -> "${diffMinutes} mins ago"
+        diffHours == 1L           -> "1 hour ago"
+        diffHours < 24            -> "${diffHours} hours ago"
+        diffDays == 1L            -> "yesterday"
+        else                      -> "${diffDays} days ago"
     }
 }
 

@@ -94,7 +94,7 @@ fun GalleryScreen(
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { isGranted ->
-        if (isGranted) viewModel.scan(contentResolver)
+        if (isGranted) viewModel.refresh(contentResolver)
     }
 
     // ---------- STEP 2: local delete functions ----------
@@ -217,7 +217,7 @@ fun GalleryScreen(
 
                     // "Refresh" replaces the old "Scan Storage" — re-runs full scan
                     Button(
-                        onClick  = { viewModel.scan(contentResolver) },
+                        onClick  = { viewModel.refresh(contentResolver) },
                         enabled  = !isScanning && !isDeleting,
                     ) {
                         if (isScanning) {

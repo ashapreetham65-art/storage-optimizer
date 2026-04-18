@@ -8,20 +8,22 @@ import androidx.room.Query
 @Dao
 interface ImageDao {
 
-    // ORDER BY id DESC matches the MediaStore DATE_ADDED DESC order used during scan,
-    // so the image list is always newest-first regardless of DB insertion order.
     @Query("SELECT * FROM images ORDER BY id DESC")
     suspend fun getAllImages(): List<ImageEntity>
 
-    // REPLACE strategy: if the same id exists (e.g. after Refresh), it overwrites cleanly.
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertAll(images: List<ImageEntity>)
-
-    // Called before every fresh scan to wipe stale data.
+    // Used by full first-scan: wipe + reinsert everything cleanly.
     @Query("DELETE FROM images")
     suspend fun clearAll()
 
-    // Targeted delete after user confirms — no need to re-insert everything.
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAll(images: List<ImageEntity>)
+
+    // Used by incremental refresh: insert/update only changed rows.
+    // REPLACE handles both INSERT (new) and UPDATE (modified) in one call.
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(images: List<ImageEntity>)
+
+    // Used after user confirms deletion and after incremental refresh detects removals.
     @Query("DELETE FROM images WHERE id IN (:ids)")
     suspend fun deleteByIds(ids: List<Long>)
 }

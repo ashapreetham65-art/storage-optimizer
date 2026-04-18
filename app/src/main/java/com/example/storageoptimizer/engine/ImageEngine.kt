@@ -5,16 +5,17 @@ import android.net.Uri
 import android.provider.MediaStore
 import com.example.storageoptimizer.data.ImageItem
 
-// ── Pure engine: no Compose, no Activity references.
-//    Everything here is testable in isolation.
 object ImageEngine {
 
-    // ── Load all images from MediaStore ordered newest-first
+    // Reads id, size, AND dateModified from MediaStore.
+    // dateModified is needed by the V10 incremental refresh to detect edits.
+    // hash is left null — caller is responsible for hashing when needed.
     fun loadImages(contentResolver: ContentResolver): List<ImageItem> {
         val imageList  = mutableListOf<ImageItem>()
         val projection = arrayOf(
             MediaStore.Images.Media._ID,
-            MediaStore.Images.Media.SIZE
+            MediaStore.Images.Media.SIZE,
+            MediaStore.Images.Media.DATE_MODIFIED   // seconds since epoch
         )
         val cursor = contentResolver.query(
             MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
@@ -22,23 +23,23 @@ object ImageEngine {
             "${MediaStore.Images.Media.DATE_ADDED} DESC"
         )
         cursor?.use {
-            val idCol   = it.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
-            val sizeCol = it.getColumnIndexOrThrow(MediaStore.Images.Media.SIZE)
+            val idCol           = it.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
+            val sizeCol         = it.getColumnIndexOrThrow(MediaStore.Images.Media.SIZE)
+            val dateModifiedCol = it.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_MODIFIED)
             while (it.moveToNext()) {
-                val id  = it.getLong(idCol)
-                val sz  = it.getLong(sizeCol)
-                val uri = Uri.withAppendedPath(
+                val id   = it.getLong(idCol)
+                val size = it.getLong(sizeCol)
+                val dm   = it.getLong(dateModifiedCol)
+                val uri  = Uri.withAppendedPath(
                     MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id.toString()
                 )
-                imageList.add(ImageItem(id, uri, null, sz))
+                imageList.add(ImageItem(id, uri, null, size, dm))
             }
         }
         return imageList
     }
 
-    // ── V6.2 dHash: captures local gradient direction, not absolute brightness.
-    //   Grid 9×8 — each row yields 8 left-vs-right comparisons = 64 bits total.
-    //   Far fewer false positives than aHash for visually unrelated images.
+    // V6.2 dHash — unchanged
     fun calculatePerceptualHash(uri: Uri, contentResolver: ContentResolver): Long? {
         return try {
             val inputStream = contentResolver.openInputStream(uri) ?: return null
@@ -80,11 +81,6 @@ object ImageEngine {
     fun hammingDistance(a: Long, b: Long): Int =
         java.lang.Long.bitCount(a xor b)
 
-    // ── BFS connected-component clustering.
-    //   threshold 0 → 100% hash match  (exact duplicates)
-    //   threshold 5 → ~90% similarity  (similar images)
-    //
-    //   Adjacency list built in one O(n²) pass; BFS just follows edges.
     fun findGroupsByThreshold(
         images: List<ImageItem>,
         threshold: Int
