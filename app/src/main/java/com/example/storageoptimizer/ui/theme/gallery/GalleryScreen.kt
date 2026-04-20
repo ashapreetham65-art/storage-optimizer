@@ -1,11 +1,8 @@
 package com.example.storageoptimizer.ui.theme.gallery
 
 import android.content.ContentUris
-import android.content.Intent
-import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
-import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -15,29 +12,74 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.*
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.keyframes
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.util.lerp
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Paint
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.example.storageoptimizer.data.ActiveTab
+import com.example.storageoptimizer.data.ImageItem
 import com.example.storageoptimizer.data.MainViewModel
+
+// ── Palette (matches HomeScreen) ─────────────────────────────────────────────
+private val BgTop         = Color(0xFF0F1422)
+private val BgBottom      = Color(0xFF1A1F35)
+private val TabPillBg     = Color(0xFF1C2340)
+private val TabActive1    = Color(0xFF5B8DEF)
+private val TabActive2    = Color(0xFF9C6FE4)
+private val TabTextActive = Color.White
+private val TabTextInact  = Color(0xFF8A90A8)
+private val SortPillBg    = Color(0xFF1C2340)
+private val AccentBlue    = Color(0xFF4FC3F7)
+private val CardOverlay   = Color(0x66000000)
+private val DeleteRed1    = Color(0xFFE53935)
+private val DeleteRed2    = Color(0xFFC62828)
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -48,56 +90,43 @@ fun GalleryScreen(
     val context         = LocalContext.current
     val contentResolver = context.contentResolver
 
-    // Read all data from ViewModel — no local scan state
     val images        by viewModel.images.collectAsState()
     val exactGroups   by viewModel.exactGroups.collectAsState()
     val similarGroups by viewModel.similarGroups.collectAsState()
     val isScanning    by viewModel.isScanning.collectAsState()
 
-    // UI-only state that belongs to this screen, not the ViewModel
     var activeTab        by remember { mutableStateOf(ActiveTab.ALL_IMAGES) }
     var selectionMode    by remember { mutableStateOf(false) }
     var selectedImages   by remember { mutableStateOf(setOf<Long>()) }
     var viewerOpen       by remember { mutableStateOf(false) }
     var viewerIndex      by remember { mutableStateOf(0) }
-    var viewerImages     by remember { mutableStateOf(listOf<com.example.storageoptimizer.data.ImageItem>()) }
-
-    // Duplicates tab starts with the largest copy pre-selected to keep,
-    // rest auto-selected for deletion. Re-computed when exactGroups changes.
+    var viewerImages     by remember { mutableStateOf(listOf<ImageItem>()) }
     var dupSelectedIds   by remember { mutableStateOf(setOf<Long>()) }
     var groupSelectedIds by remember { mutableStateOf(setOf<Long>()) }
 
-    // Sync auto-selection whenever exactGroups updates (after scan or delete)
     LaunchedEffect(exactGroups) {
         dupSelectedIds = viewModel.autoSelectedDuplicateIds()
     }
 
-    // Bridge Activity-level delete result back into ViewModel
     var pendingDeleteIds  by remember { mutableStateOf(setOf<Long>()) }
     var deleteConfirmFlag by remember { mutableStateOf(false) }
     var deleteCancelFlag  by remember { mutableStateOf(false) }
     var isDeleting        by remember { mutableStateOf(false) }
 
-    // ---------- STEP 1: launchers ----------
+    // ---------- launchers ----------
 
     val deleteRequestLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartIntentSenderForResult()
     ) { result ->
-        if (result.resultCode == android.app.Activity.RESULT_OK) {
-            deleteConfirmFlag = true
-        } else {
-            pendingDeleteIds = emptySet()
-            deleteCancelFlag = true
-        }
+        if (result.resultCode == android.app.Activity.RESULT_OK) deleteConfirmFlag = true
+        else { pendingDeleteIds = emptySet(); deleteCancelFlag = true }
     }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
-    ) { isGranted ->
-        if (isGranted) viewModel.refresh(contentResolver)
-    }
+    ) { isGranted -> if (isGranted) viewModel.refresh(contentResolver) }
 
-    // ---------- STEP 2: local delete functions ----------
+    // ---------- delete helper ----------
 
     fun launchDelete(toDelete: Set<Long>) {
         if (toDelete.isEmpty()) return
@@ -113,29 +142,22 @@ fun GalleryScreen(
             isDeleting = true
         } else {
             isDeleting = true
-            viewModel.viewModelScopeDelete(toDelete, contentResolver) {
-                deleteConfirmFlag = true
-            }
+            viewModel.viewModelScopeDelete(toDelete, contentResolver) { deleteConfirmFlag = true }
         }
     }
 
-    // ---------- STEP 3: effects ----------
+    // ---------- effects ----------
 
     LaunchedEffect(deleteConfirmFlag) {
         if (!deleteConfirmFlag) return@LaunchedEffect
         deleteConfirmFlag = false
-
         val deletedIds = pendingDeleteIds
-
-        // Update UI-only selection state
         selectedImages   = selectedImages - deletedIds
         if (selectedImages.isEmpty()) selectionMode = false
         dupSelectedIds   = (dupSelectedIds - deletedIds)
             .intersect(viewModel.exactGroups.value.flatten().map { it.id }.toSet())
         groupSelectedIds = (groupSelectedIds - deletedIds)
             .intersect(viewModel.similarGroups.value.flatten().map { it.id }.toSet())
-
-        // Delegate actual data update to ViewModel
         viewModel.onDeleteConfirmed(deletedIds)
         pendingDeleteIds = emptySet()
         isDeleting       = false
@@ -147,347 +169,646 @@ fun GalleryScreen(
         isDeleting       = false
     }
 
-    // ---------- UI ----------
+    // ---------- root ----------
 
-    Surface(modifier = Modifier.fillMaxSize()) {
-
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Brush.verticalGradient(listOf(BgTop, BgBottom)))
+    ) {
         if (!viewerOpen) {
+            Column(modifier = Modifier.fillMaxSize()) {
 
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(16.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-
-                Spacer(modifier = Modifier.height(48.dp))
-
-                val showingSelectionToolbar = selectionMode && activeTab == ActiveTab.ALL_IMAGES
-
-                if (!showingSelectionToolbar) {
-                    Text(
-                        text  = "Images found: ${images.size}",
-                        style = MaterialTheme.typography.headlineMedium
-                    )
-                } else {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment     = Alignment.CenterVertically
-                    ) {
-                        TextButton(onClick = {
-                            selectionMode  = false
-                            selectedImages = emptySet()
-                        }) { Text("Cancel") }
-                        Text(
-                            text  = "Selected: ${selectedImages.size} / ${images.size}",
-                            style = MaterialTheme.typography.titleMedium
-                        )
-                        Spacer(modifier = Modifier.width(64.dp))
-                    }
-                    if (selectedImages.isNotEmpty()) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Button(
-                            onClick  = { launchDelete(selectedImages) },
-                            enabled  = !isDeleting,
-                            colors   = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.error
-                            ),
-                            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp)
-                        ) {
-                            if (isDeleting) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(18.dp),
-                                    strokeWidth = 2.dp,
-                                    color = Color.White
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                            }
-                            Text(
-                                if (isDeleting) "Deleting..."
-                                else "Delete Selected (${selectedImages.size})"
-                            )
-                        }
-                    }
-                }
-
-                if (!showingSelectionToolbar) {
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    // "Refresh" replaces the old "Scan Storage" — re-runs full scan
-                    Button(
-                        onClick  = { viewModel.refresh(contentResolver) },
-                        enabled  = !isScanning && !isDeleting,
-                    ) {
-                        if (isScanning) {
-                            CircularProgressIndicator(
-                                modifier    = Modifier.size(16.dp),
-                                strokeWidth = 2.dp,
-                                color       = Color.White
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Scanning...")
-                        } else {
-                            Text("Refresh")
-                        }
-                    }
-
-                    if (isScanning) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(
-                            verticalAlignment     = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center,
-                            modifier              = Modifier.padding(8.dp)
-                        ) {
-                            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(text = "Scanning images...", style = MaterialTheme.typography.bodyLarge)
-                        }
-                    }
-
-                    if (images.isNotEmpty() && !isScanning) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.Center
-                        ) {
-                            listOf(
-                                ActiveTab.ALL_IMAGES to "All Images",
-                                ActiveTab.DUPLICATES  to "Duplicates",
-                                ActiveTab.GROUPS      to "Groups"
-                            ).forEach { (tab, label) ->
-                                if (activeTab == tab) {
-                                    Button(
-                                        onClick  = { activeTab = tab },
-                                        modifier = Modifier.padding(horizontal = 4.dp)
-                                    ) { Text(label) }
-                                } else {
-                                    OutlinedButton(
-                                        onClick  = { activeTab = tab },
-                                        modifier = Modifier.padding(horizontal = 4.dp)
-                                    ) { Text(label) }
-                                }
-                            }
-                        }
-                    }
-                }
-
+                Spacer(modifier = Modifier.statusBarsPadding())
                 Spacer(modifier = Modifier.height(8.dp))
 
+                TopBar(
+                    activeTab      = activeTab,
+                    selectionMode  = selectionMode,
+                    selectedCount  = selectedImages.size,
+                    totalCount     = images.size,
+                    onBack         = onNavigateBack,
+                    onTabSelected  = { activeTab = it },
+                    onCancelSelect = { selectionMode = false; selectedImages = emptySet() }
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                SortBar()
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                if (isScanning) {
+                    Row(
+                        verticalAlignment     = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center,
+                        modifier              = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 8.dp)
+                    ) {
+                        CircularProgressIndicator(
+                            modifier    = Modifier.size(16.dp),
+                            strokeWidth = 2.dp,
+                            color       = AccentBlue
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(text = "Updating...", color = TabTextInact, fontSize = 13.sp)
+                    }
+                }
+
                 when (activeTab) {
-
-                    ActiveTab.ALL_IMAGES -> {
-                        if (images.isNotEmpty()) {
-                            LazyVerticalGrid(
-                                columns               = GridCells.Fixed(3),
-                                modifier              = Modifier.weight(1f),
-                                contentPadding        = PaddingValues(4.dp),
-                                verticalArrangement   = Arrangement.spacedBy(4.dp),
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
-                                itemsIndexed(
-                                    items = images,
-                                    key   = { _, image -> image.id }
-                                ) { index, image ->
-                                    val isSelected = selectedImages.contains(image.id)
-                                    Box(
-                                        modifier = Modifier
-                                            .aspectRatio(1f)
-                                            .fillMaxWidth()
-                                            .combinedClickable(
-                                                onClick = {
-                                                    if (selectionMode) {
-                                                        val updated = if (isSelected)
-                                                            selectedImages - image.id
-                                                        else
-                                                            selectedImages + image.id
-                                                        selectedImages = updated
-                                                        if (updated.isEmpty()) selectionMode = false
-                                                    } else {
-                                                        viewerImages = images
-                                                        viewerIndex  = index
-                                                        viewerOpen   = true
-                                                    }
-                                                },
-                                                onLongClick = {
-                                                    selectionMode  = true
-                                                    selectedImages = selectedImages + image.id
-                                                }
-                                            )
-                                    ) {
-                                        AsyncImage(
-                                            model              = image.uri,
-                                            contentDescription = null,
-                                            contentScale       = ContentScale.Crop,
-                                            modifier           = Modifier.fillMaxSize()
-                                        )
-                                        if (isSelected) {
-                                            Box(
-                                                modifier = Modifier
-                                                    .fillMaxSize()
-                                                    .background(Color.Black.copy(alpha = 0.4f))
-                                            )
-                                            Icon(
-                                                imageVector        = Icons.Filled.CheckCircle,
-                                                contentDescription = "Selected",
-                                                tint               = Color.White,
-                                                modifier           = Modifier
-                                                    .align(Alignment.TopEnd)
-                                                    .padding(6.dp)
-                                                    .size(22.dp)
-                                            )
-                                        }
-                                    }
-                                }
-                            }
+                    ActiveTab.ALL_IMAGES -> AllImagesGrid(
+                        images            = images,
+                        selectionMode     = selectionMode,
+                        selectedImages    = selectedImages,
+                        onImageClick      = { index ->
+                            viewerImages = images
+                            viewerIndex  = index
+                            viewerOpen   = true
+                        },
+                        onImageLongClick  = { id ->
+                            selectionMode  = true
+                            selectedImages = selectedImages + id
+                        },
+                        onSelectionChange = { updated ->
+                            selectedImages = updated
+                            if (updated.isEmpty()) selectionMode = false
                         }
-                    }
+                    )
 
-                    ActiveTab.DUPLICATES -> {
-                        DuplicatesContent(
-                            groups            = exactGroups,
-                            selectedIds       = dupSelectedIds,
-                            isScanning        = isScanning,
-                            isDeleting        = isDeleting,
-                            modifier          = Modifier.weight(1f),
-                            onSelectionChange = { dupSelectedIds = it },
-                            onViewGroup       = { group ->
-                                viewerImages = group; viewerIndex = 0; viewerOpen = true
-                            },
-                            onUnselectGroup   = { groupIds ->
-                                dupSelectedIds = dupSelectedIds - groupIds
-                            },
-                            onDelete          = { launchDelete(dupSelectedIds) }
-                        )
-                    }
+                    ActiveTab.DUPLICATES -> DuplicatesContent(
+                        groups            = exactGroups,
+                        selectedIds       = dupSelectedIds,
+                        isScanning        = isScanning,
+                        isDeleting        = isDeleting,
+                        modifier          = Modifier.weight(1f),
+                        onSelectionChange = { dupSelectedIds = it },
+                        onViewGroup       = { group ->
+                            viewerImages = group; viewerIndex = 0; viewerOpen = true
+                        },
+                        onUnselectGroup   = { groupIds -> dupSelectedIds = dupSelectedIds - groupIds },
+                        onDelete          = { launchDelete(dupSelectedIds) }
+                    )
 
-                    ActiveTab.GROUPS -> {
-                        GroupsContent(
-                            groups            = similarGroups,
-                            selectedIds       = groupSelectedIds,
-                            isScanning        = isScanning,
-                            isDeleting        = isDeleting,
-                            modifier          = Modifier.weight(1f),
-                            onSelectionChange = { groupSelectedIds = it },
-                            onViewGroup       = { group ->
-                                viewerImages = group; viewerIndex = 0; viewerOpen = true
-                            },
-                            onSelectGroup     = { groupIds ->
-                                groupSelectedIds = groupSelectedIds + groupIds
-                            },
-                            onUnselectGroup   = { groupIds ->
-                                groupSelectedIds = groupSelectedIds - groupIds
-                            },
-                            onDelete          = { launchDelete(groupSelectedIds) }
-                        )
-                    }
+                    ActiveTab.GROUPS -> GroupsContent(
+                        groups            = similarGroups,
+                        selectedIds       = groupSelectedIds,
+                        isScanning        = isScanning,
+                        isDeleting        = isDeleting,
+                        modifier          = Modifier.weight(1f),
+                        onSelectionChange = { groupSelectedIds = it },
+                        onViewGroup       = { group ->
+                            viewerImages = group; viewerIndex = 0; viewerOpen = true
+                        },
+                        onSelectGroup     = { groupIds -> groupSelectedIds = groupSelectedIds + groupIds },
+                        onUnselectGroup   = { groupIds -> groupSelectedIds = groupSelectedIds - groupIds },
+                        onDelete          = { launchDelete(groupSelectedIds) }
+                    )
+                }
+            }
+
+            // ── Floating Delete Button
+            if (activeTab == ActiveTab.ALL_IMAGES) {
+                AnimatedVisibility(
+                    visible  = selectionMode && selectedImages.isNotEmpty(),
+                    enter    = slideInVertically(initialOffsetY = { it }, animationSpec = tween(300)) +
+                            fadeIn(animationSpec = tween(300)),
+                    exit     = slideOutVertically(targetOffsetY = { it }, animationSpec = tween(250)) +
+                            fadeOut(animationSpec = tween(250)),
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .navigationBarsPadding()
+                        .padding(bottom = 28.dp)
+                ) {
+                    FloatingDeleteButton(
+                        count      = selectedImages.size,
+                        isDeleting = isDeleting,
+                        onClick    = { launchDelete(selectedImages) }
+                    )
                 }
             }
 
         } else {
-
-            // Fullscreen pager viewer
-            val pagerState = rememberPagerState(
-                initialPage = viewerIndex,
-                pageCount   = { viewerImages.size }
+            FullscreenViewer(
+                viewerImages = viewerImages,
+                viewerIndex  = viewerIndex,
+                onClose      = { viewerOpen = false }
             )
-            var isZoomed by remember { mutableStateOf(false) }
+        }
+    }
+}
 
-            androidx.activity.compose.BackHandler { viewerOpen = false }
+// ─────────────────────────────────────────────────────────────────────────────
+// Sliding tab pill
+// ─────────────────────────────────────────────────────────────────────────────
+@Composable
+private fun SlidingTabPill(
+    activeTab:     ActiveTab,
+    onTabSelected: (ActiveTab) -> Unit,
+    modifier:      Modifier = Modifier
+) {
+    val tabs = listOf(
+        ActiveTab.ALL_IMAGES to "All",
+        ActiveTab.DUPLICATES  to "Duplicates",
+        ActiveTab.GROUPS      to "Similar"
+    )
+    val tabCount    = tabs.size
+    val activeIndex = tabs.indexOfFirst { it.first == activeTab }.toFloat()
 
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black)
-            ) {
-                HorizontalPager(
-                    state             = pagerState,
-                    userScrollEnabled = !isZoomed,
-                    modifier          = Modifier.fillMaxSize()
-                ) { page ->
-                    var scale   by remember { mutableStateOf(1f) }
-                    var offsetX by remember { mutableStateOf(0f) }
-                    var offsetY by remember { mutableStateOf(0f) }
+    val indicatorPos by animateFloatAsState(
+        targetValue   = activeIndex,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness    = Spring.StiffnessMedium
+        ),
+        label = "tabIndicator"
+    )
 
-                    LaunchedEffect(pagerState.currentPage) {
-                        if (pagerState.currentPage != page) {
-                            scale = 1f; offsetX = 0f; offsetY = 0f; isZoomed = false
-                        }
-                    }
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(22.dp))
+            .background(TabPillBg)
+            .drawBehind {
+                val pad        = 4.dp.toPx()
+                val slotWidth  = (size.width - pad * 2) / tabCount
+                val pillHeight = size.height - pad * 2
+                val cornerPx   = 18.dp.toPx()
+                val pillX      = pad + indicatorPos * slotWidth
 
-                    AsyncImage(
-                        model              = viewerImages[page].uri,
-                        contentDescription = null,
-                        contentScale       = ContentScale.Fit,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .clipToBounds()
-                            .pointerInput(page) {
-                                awaitEachGesture {
-                                    do {
-                                        val event       = awaitPointerEvent()
-                                        val canceled    = event.changes.any { it.isConsumed }
-                                        if (canceled) break
-                                        val zoomChange  = event.calculateZoom()
-                                        val panChange   = event.calculatePan()
-                                        val fingerCount = event.changes.count { it.pressed }
-                                        if (fingerCount >= 2) {
-                                            val ns = (scale * zoomChange).coerceIn(1f, 5f)
-                                            scale    = ns
-                                            isZoomed = scale > 1f
-                                            if (scale > 1f) {
-                                                val mx = (size.width  * (scale - 1f)) / 2f
-                                                val my = (size.height * (scale - 1f)) / 2f
-                                                offsetX = (offsetX + panChange.x).coerceIn(-mx, mx)
-                                                offsetY = (offsetY + panChange.y).coerceIn(-my, my)
-                                            } else {
-                                                offsetX = 0f; offsetY = 0f; isZoomed = false
-                                            }
-                                            event.changes.forEach { it.consume() }
-                                        } else if (fingerCount == 1 && scale > 1f) {
-                                            val mx = (size.width  * (scale - 1f)) / 2f
-                                            val my = (size.height * (scale - 1f)) / 2f
-                                            offsetX = (offsetX + panChange.x).coerceIn(-mx, mx)
-                                            offsetY = (offsetY + panChange.y).coerceIn(-my, my)
-                                            event.changes.forEach { it.consume() }
-                                        }
-                                    } while (event.changes.any { it.pressed })
-                                }
-                            }
-                            .graphicsLayer(
-                                scaleX       = scale,
-                                scaleY       = scale,
-                                translationX = offsetX,
-                                translationY = offsetY
-                            )
-                    )
-                }
-
-                IconButton(
-                    onClick  = { viewerOpen = false },
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .statusBarsPadding()
-                        .padding(8.dp)
+                drawRoundRect(
+                    brush        = Brush.horizontalGradient(
+                        colors = listOf(TabActive1, TabActive2),
+                        startX = pillX,
+                        endX   = pillX + slotWidth
+                    ),
+                    topLeft      = Offset(pillX, pad),
+                    size         = Size(slotWidth, pillHeight),
+                    cornerRadius = CornerRadius(cornerPx, cornerPx)
+                )
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            tabs.forEach { (tab, label) ->
+                val isActive = activeTab == tab
+                Box(
+                    modifier         = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .clickable { onTabSelected(tab) },
+                    contentAlignment = Alignment.Center
                 ) {
-                    Icon(
-                        imageVector        = Icons.Filled.ArrowBack,
-                        contentDescription = "Back",
-                        tint               = Color.White
+                    Text(
+                        text       = label,
+                        color      = if (isActive) TabTextActive else TabTextInact,
+                        fontSize   = 14.sp,
+                        fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal
                     )
                 }
+            }
+        }
+    }
+}
 
-                Text(
-                    text  = "${pagerState.currentPage + 1} / ${viewerImages.size}",
-                    color = Color.White,
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .statusBarsPadding()
-                        .padding(16.dp)
+// ─────────────────────────────────────────────────────────────────────────────
+// Top bar
+// ─────────────────────────────────────────────────────────────────────────────
+@Composable
+private fun TopBar(
+    activeTab:      ActiveTab,
+    selectionMode:  Boolean,
+    selectedCount:  Int,
+    totalCount:     Int,
+    onBack:         () -> Unit,
+    onTabSelected:  (ActiveTab) -> Unit,
+    onCancelSelect: () -> Unit
+) {
+    // The back button + gap together take 44 + 12 = 56.dp from the left edge.
+    // In selection mode we replace the tab pill with a full-width row that
+    // must account for those 56.dp so "Selected: x/x" is truly centred.
+    //
+    // Solution: wrap the entire bar in a Box so both the back button and the
+    // selection row are siblings positioned relative to the same container.
+    // The selection row fills full width; the text uses Alignment.Center on
+    // the Box so it is centred regardless of button sizes.
+
+    if (!selectionMode) {
+        // ── Normal mode: back button + tab pill side by side
+        Row(
+            modifier          = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier         = Modifier
+                    .size(44.dp)
+                    .clip(CircleShape)
+                    .background(TabPillBg)
+                    .clickable { onBack() },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector        = Icons.Filled.ArrowBack,
+                    contentDescription = "Back",
+                    tint               = Color.White,
+                    modifier           = Modifier.size(20.dp)
+                )
+            }
+            Spacer(modifier = Modifier.width(12.dp))
+            SlidingTabPill(
+                activeTab     = activeTab,
+                onTabSelected = onTabSelected,
+                modifier      = Modifier
+                    .weight(1f)
+                    .height(44.dp)
+            )
+        }
+    } else {
+        // ── Selection mode: full-width overlay so count is pixel-perfect centred.
+        // Back button stays on the left, cancel on the right, count in a Box
+        // that fills the remaining space with true Alignment.Center.
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp)
+                .height(44.dp)
+        ) {
+            // Back button — left edge
+            Box(
+                modifier         = Modifier
+                    .align(Alignment.CenterStart)
+                    .size(44.dp)
+                    .clip(CircleShape)
+                    .background(TabPillBg)
+                    .clickable { onBack() },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector        = Icons.Filled.ArrowBack,
+                    contentDescription = "Back",
+                    tint               = Color.White,
+                    modifier           = Modifier.size(20.dp)
+                )
+            }
+
+            // Selected count — absolutely centred in the full bar width
+            Text(
+                text       = "Selected: $selectedCount / $totalCount",
+                color      = Color.White,
+                fontSize   = 15.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier   = Modifier.align(Alignment.Center)
+            )
+
+            // Cancel button — right edge
+            Box(
+                modifier         = Modifier
+                    .align(Alignment.CenterEnd)
+                    .size(44.dp)
+                    .clip(CircleShape)
+                    .background(TabPillBg)
+                    .clickable { onCancelSelect() },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector        = Icons.Filled.Close,
+                    contentDescription = "Cancel selection",
+                    tint               = Color.White,
+                    modifier           = Modifier.size(18.dp)
                 )
             }
         }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Floating delete button
+// ─────────────────────────────────────────────────────────────────────────────
+@Composable
+private fun FloatingDeleteButton(
+    count:      Int,
+    isDeleting: Boolean,
+    onClick:    () -> Unit
+) {
+    val infiniteTransition = rememberInfiniteTransition(label = "deleteGradient")
+
+    val shimmer by infiniteTransition.animateFloat(
+        initialValue  = 0f,
+        targetValue   = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = keyframes {
+                durationMillis = 4000       // total cycle = 4 seconds
+                0.0f   at 0                 // start
+                1.0f   at 1500              // sweep completes in 1.5s
+                1.0f   at 4000
+            },
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "shimmer"
+    )
+
+    val animatedBrush = Brush.linearGradient(
+        colorStops = arrayOf(
+            0.0f                               to Color(0xFFEE2E2E),
+            (shimmer - 0.1f).coerceAtLeast(0f) to Color(0xFFE53935),
+            shimmer                            to Color(0xFFFF5252),
+            (shimmer + 0.1f).coerceAtMost(1f)  to Color(0xFFE53935),
+            1.0f                               to Color(0xFFEE2E2E)
+        ),
+        start = Offset(x = lerp(-200f, 800f, shimmer), y = 0f),  // starts off-screen left
+        end   = Offset(800f, 0f)
+    )
+
+    Button(
+        onClick        = onClick,
+        enabled        = !isDeleting,
+        shape          = CircleShape,
+        colors         = ButtonDefaults.buttonColors(
+            containerColor         = Color.Transparent,
+            disabledContainerColor = Color(0x66C62828)
+        ),
+        elevation      = ButtonDefaults.buttonElevation(
+            defaultElevation = 0.dp,
+            pressedElevation = 0.dp
+        ),
+        contentPadding = PaddingValues(horizontal = 28.dp, vertical = 0.dp),
+        modifier       = Modifier
+            .padding(horizontal = 48.dp, vertical = 24.dp)
+            .height(58.dp)
+            .background(
+                brush = animatedBrush,
+                shape = CircleShape
+            )
+    ) {
+        if (isDeleting) {
+            CircularProgressIndicator(
+                modifier      = Modifier.size(20.dp),
+                strokeWidth   = 2.dp,
+                color         = Color.White
+            )
+            Spacer(modifier = Modifier.width(10.dp))
+            Text(
+                text          = "Deleting...",
+                color         = Color.White,
+                fontSize      = 16.sp,
+                fontWeight    = FontWeight.Bold,
+                letterSpacing = 0.5.sp
+            )
+        } else {
+            Icon(
+                imageVector        = Icons.Filled.Delete,
+                contentDescription = null,
+                tint               = Color.White,
+                modifier           = Modifier.size(22.dp)
+            )
+            Spacer(modifier = Modifier.width(10.dp))
+            Text(
+                text          = "Delete",
+                color         = Color.White,
+                fontSize      = 17.sp,
+                fontWeight    = FontWeight.Bold,
+                letterSpacing = 0.5.sp
+            )
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sort bar — visual only
+// ─────────────────────────────────────────────────────────────────────────────
+@Composable
+private fun SortBar() {
+    Box(
+        modifier         = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp)
+            .height(44.dp)
+            .clip(RoundedCornerShape(22.dp))
+            .background(SortPillBg),
+        contentAlignment = Alignment.Center
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text       = "Sort By: Newest",
+                color      = Color.White,
+                fontSize   = 14.sp,
+                fontWeight = FontWeight.Medium
+            )
+            Spacer(modifier = Modifier.width(4.dp))
+            Icon(
+                imageVector        = Icons.Filled.KeyboardArrowDown,
+                contentDescription = "Sort options",
+                tint               = Color.White,
+                modifier           = Modifier.size(18.dp)
+            )
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// All Images grid
+// ─────────────────────────────────────────────────────────────────────────────
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun AllImagesGrid(
+    images:            List<ImageItem>,
+    selectionMode:     Boolean,
+    selectedImages:    Set<Long>,
+    onImageClick:      (Int) -> Unit,
+    onImageLongClick:  (Long) -> Unit,
+    onSelectionChange: (Set<Long>) -> Unit
+) {
+    if (images.isEmpty()) return
+
+    LazyVerticalGrid(
+        columns               = GridCells.Fixed(3),
+        modifier              = Modifier.fillMaxSize(),
+        contentPadding        = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+        verticalArrangement   = Arrangement.spacedBy(8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        itemsIndexed(
+            items = images,
+            key   = { _, image -> image.id }
+        ) { index, image ->
+            val isSelected = selectedImages.contains(image.id)
+
+            Box(
+                modifier = Modifier
+                    .aspectRatio(1f)
+                    .graphicsLayer {
+                        // Lifts the card off the background — creates the 3D shadow
+                        shadowElevation = 12f
+                        shape           = RoundedCornerShape(14.dp)
+                        clip            = true
+                    }
+                    .border(
+                        width = 1.dp,
+                        brush = Brush.linearGradient(
+                            colors = listOf(
+                                Color(0x40FFFFFF),  // subtle white highlight on top-left edge
+                                Color(0x10FFFFFF),  // fades to near-transparent on bottom-right
+                            )
+                        ),
+                        shape = RoundedCornerShape(14.dp)
+                    )
+                    .clip(RoundedCornerShape(14.dp))
+                    .combinedClickable(
+                        onClick = {
+                            if (selectionMode) {
+                                val updated = if (isSelected)
+                                    selectedImages - image.id
+                                else
+                                    selectedImages + image.id
+                                onSelectionChange(updated)
+                            } else {
+                                onImageClick(index)
+                            }
+                        },
+                        onLongClick = { onImageLongClick(image.id) }
+                    )
+            ) {
+                AsyncImage(
+                    model              = image.uri,
+                    contentDescription = null,
+                    contentScale       = ContentScale.Crop,
+                    modifier           = Modifier.fillMaxSize()
+                )
+                if (isSelected) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(CardOverlay)
+                    )
+                    Icon(
+                        imageVector        = Icons.Filled.CheckCircle,
+                        contentDescription = "Selected",
+                        tint               = Color.White,
+                        modifier           = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(6.dp)
+                            .size(22.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Fullscreen pager viewer
+// ─────────────────────────────────────────────────────────────────────────────
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun FullscreenViewer(
+    viewerImages: List<ImageItem>,
+    viewerIndex:  Int,
+    onClose:      () -> Unit
+) {
+    val pagerState = rememberPagerState(
+        initialPage = viewerIndex,
+        pageCount   = { viewerImages.size }
+    )
+    var isZoomed by remember { mutableStateOf(false) }
+
+    androidx.activity.compose.BackHandler { onClose() }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+    ) {
+        HorizontalPager(
+            state             = pagerState,
+            userScrollEnabled = !isZoomed,
+            modifier          = Modifier.fillMaxSize()
+        ) { page ->
+            var scale   by remember { mutableStateOf(1f) }
+            var offsetX by remember { mutableStateOf(0f) }
+            var offsetY by remember { mutableStateOf(0f) }
+
+            LaunchedEffect(pagerState.currentPage) {
+                if (pagerState.currentPage != page) {
+                    scale = 1f; offsetX = 0f; offsetY = 0f; isZoomed = false
+                }
+            }
+
+            AsyncImage(
+                model              = viewerImages[page].uri,
+                contentDescription = null,
+                contentScale       = ContentScale.Fit,
+                modifier           = Modifier
+                    .fillMaxSize()
+                    .clipToBounds()
+                    .pointerInput(page) {
+                        awaitEachGesture {
+                            do {
+                                val event       = awaitPointerEvent()
+                                val canceled    = event.changes.any { it.isConsumed }
+                                if (canceled) break
+                                val zoomChange  = event.calculateZoom()
+                                val panChange   = event.calculatePan()
+                                val fingerCount = event.changes.count { it.pressed }
+                                if (fingerCount >= 2) {
+                                    val ns = (scale * zoomChange).coerceIn(1f, 5f)
+                                    scale    = ns
+                                    isZoomed = scale > 1f
+                                    if (scale > 1f) {
+                                        val mx = (size.width  * (scale - 1f)) / 2f
+                                        val my = (size.height * (scale - 1f)) / 2f
+                                        offsetX = (offsetX + panChange.x).coerceIn(-mx, mx)
+                                        offsetY = (offsetY + panChange.y).coerceIn(-my, my)
+                                    } else {
+                                        offsetX = 0f; offsetY = 0f; isZoomed = false
+                                    }
+                                    event.changes.forEach { it.consume() }
+                                } else if (fingerCount == 1 && scale > 1f) {
+                                    val mx = (size.width  * (scale - 1f)) / 2f
+                                    val my = (size.height * (scale - 1f)) / 2f
+                                    offsetX = (offsetX + panChange.x).coerceIn(-mx, mx)
+                                    offsetY = (offsetY + panChange.y).coerceIn(-my, my)
+                                    event.changes.forEach { it.consume() }
+                                }
+                            } while (event.changes.any { it.pressed })
+                        }
+                    }
+                    .graphicsLayer(
+                        scaleX       = scale,
+                        scaleY       = scale,
+                        translationX = offsetX,
+                        translationY = offsetY
+                    )
+            )
+        }
+
+        IconButton(
+            onClick  = onClose,
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .statusBarsPadding()
+                .padding(8.dp)
+        ) {
+            Icon(
+                imageVector        = Icons.Filled.ArrowBack,
+                contentDescription = "Back",
+                tint               = Color.White
+            )
+        }
+
+        Text(
+            text     = "${pagerState.currentPage + 1} / ${viewerImages.size}",
+            color    = Color.White,
+            style    = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .statusBarsPadding()
+                .padding(16.dp)
+        )
     }
 }
