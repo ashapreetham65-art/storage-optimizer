@@ -78,8 +78,9 @@ private val TabTextInact  = Color(0xFF8A90A8)
 private val SortPillBg    = Color(0xFF1C2340)
 private val AccentBlue    = Color(0xFF4FC3F7)
 private val CardOverlay   = Color(0x66000000)
-private val DeleteRed1    = Color(0xFFE53935)
-private val DeleteRed2    = Color(0xFFC62828)
+
+//for sorting of images in dropdown
+enum class SortOrder { NEWEST, OLDEST, SIZE_LARGE, SIZE_SMALL }
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -89,6 +90,7 @@ fun GalleryScreen(
 ) {
     val context         = LocalContext.current
     val contentResolver = context.contentResolver
+    val gridState       = rememberLazyGridState()
 
     val images        by viewModel.images.collectAsState()
     val exactGroups   by viewModel.exactGroups.collectAsState()
@@ -103,6 +105,7 @@ fun GalleryScreen(
     var viewerImages     by remember { mutableStateOf(listOf<ImageItem>()) }
     var dupSelectedIds   by remember { mutableStateOf(setOf<Long>()) }
     var groupSelectedIds by remember { mutableStateOf(setOf<Long>()) }
+    var sortOrder        by remember { mutableStateOf(SortOrder.NEWEST) }
 
     LaunchedEffect(exactGroups) {
         dupSelectedIds = viewModel.autoSelectedDuplicateIds()
@@ -176,119 +179,126 @@ fun GalleryScreen(
             .fillMaxSize()
             .background(Brush.verticalGradient(listOf(BgTop, BgBottom)))
     ) {
-        if (!viewerOpen) {
-            Column(modifier = Modifier.fillMaxSize()) {
 
-                Spacer(modifier = Modifier.statusBarsPadding())
-                Spacer(modifier = Modifier.height(8.dp))
+        // ── Grid layer — always in composition, just hidden behind viewer ──
+        Column(modifier = Modifier.fillMaxSize()) {
 
-                TopBar(
-                    activeTab      = activeTab,
-                    selectionMode  = selectionMode,
-                    selectedCount  = selectedImages.size,
-                    totalCount     = images.size,
-                    onBack         = onNavigateBack,
-                    onTabSelected  = { activeTab = it },
-                    onCancelSelect = { selectionMode = false; selectedImages = emptySet() }
+            Spacer(modifier = Modifier.statusBarsPadding())
+            Spacer(modifier = Modifier.height(8.dp))
+
+            TopBar(
+                activeTab      = activeTab,
+                selectionMode  = selectionMode,
+                selectedCount  = selectedImages.size,
+                totalCount     = images.size,
+                onBack         = onNavigateBack,
+                onTabSelected  = { activeTab = it },
+                onCancelSelect = { selectionMode = false; selectedImages = emptySet() }
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            SortBar(
+                sortOrder      = sortOrder,
+                onSortSelected = { sortOrder = it }
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            if (isScanning) {
+                Row(
+                    verticalAlignment     = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center,
+                    modifier              = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp)
+                ) {
+                    CircularProgressIndicator(
+                        modifier    = Modifier.size(16.dp),
+                        strokeWidth = 2.dp,
+                        color       = AccentBlue
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(text = "Updating...", color = TabTextInact, fontSize = 13.sp)
+                }
+            }
+
+            when (activeTab) {
+                ActiveTab.ALL_IMAGES -> AllImagesGrid(
+                    images            = images,
+                    sortOrder         = sortOrder,
+                    selectionMode     = selectionMode,
+                    selectedImages    = selectedImages,
+                    gridState         = gridState,
+                    onImageClick      = { index, sortedList ->
+                        viewerImages = sortedList
+                        viewerIndex  = index
+                        viewerOpen   = true
+                    },
+                    onImageLongClick  = { id ->
+                        selectionMode  = true
+                        selectedImages = selectedImages + id
+                    },
+                    onSelectionChange = { updated ->
+                        selectedImages = updated
+                        if (updated.isEmpty()) selectionMode = false
+                    }
                 )
 
-                Spacer(modifier = Modifier.height(12.dp))
+                ActiveTab.DUPLICATES -> DuplicatesContent(
+                    groups            = exactGroups,
+                    selectedIds       = dupSelectedIds,
+                    isScanning        = isScanning,
+                    isDeleting        = isDeleting,
+                    modifier          = Modifier.weight(1f),
+                    onSelectionChange = { dupSelectedIds = it },
+                    onViewGroup       = { group ->
+                        viewerImages = group; viewerIndex = 0; viewerOpen = true
+                    },
+                    onUnselectGroup   = { groupIds -> dupSelectedIds = dupSelectedIds - groupIds },
+                    onDelete          = { launchDelete(dupSelectedIds) }
+                )
 
-                SortBar()
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                if (isScanning) {
-                    Row(
-                        verticalAlignment     = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center,
-                        modifier              = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 8.dp)
-                    ) {
-                        CircularProgressIndicator(
-                            modifier    = Modifier.size(16.dp),
-                            strokeWidth = 2.dp,
-                            color       = AccentBlue
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(text = "Updating...", color = TabTextInact, fontSize = 13.sp)
-                    }
-                }
-
-                when (activeTab) {
-                    ActiveTab.ALL_IMAGES -> AllImagesGrid(
-                        images            = images,
-                        selectionMode     = selectionMode,
-                        selectedImages    = selectedImages,
-                        onImageClick      = { index ->
-                            viewerImages = images
-                            viewerIndex  = index
-                            viewerOpen   = true
-                        },
-                        onImageLongClick  = { id ->
-                            selectionMode  = true
-                            selectedImages = selectedImages + id
-                        },
-                        onSelectionChange = { updated ->
-                            selectedImages = updated
-                            if (updated.isEmpty()) selectionMode = false
-                        }
-                    )
-
-                    ActiveTab.DUPLICATES -> DuplicatesContent(
-                        groups            = exactGroups,
-                        selectedIds       = dupSelectedIds,
-                        isScanning        = isScanning,
-                        isDeleting        = isDeleting,
-                        modifier          = Modifier.weight(1f),
-                        onSelectionChange = { dupSelectedIds = it },
-                        onViewGroup       = { group ->
-                            viewerImages = group; viewerIndex = 0; viewerOpen = true
-                        },
-                        onUnselectGroup   = { groupIds -> dupSelectedIds = dupSelectedIds - groupIds },
-                        onDelete          = { launchDelete(dupSelectedIds) }
-                    )
-
-                    ActiveTab.GROUPS -> GroupsContent(
-                        groups            = similarGroups,
-                        selectedIds       = groupSelectedIds,
-                        isScanning        = isScanning,
-                        isDeleting        = isDeleting,
-                        modifier          = Modifier.weight(1f),
-                        onSelectionChange = { groupSelectedIds = it },
-                        onViewGroup       = { group ->
-                            viewerImages = group; viewerIndex = 0; viewerOpen = true
-                        },
-                        onSelectGroup     = { groupIds -> groupSelectedIds = groupSelectedIds + groupIds },
-                        onUnselectGroup   = { groupIds -> groupSelectedIds = groupSelectedIds - groupIds },
-                        onDelete          = { launchDelete(groupSelectedIds) }
-                    )
-                }
+                ActiveTab.GROUPS -> GroupsContent(
+                    groups            = similarGroups,
+                    selectedIds       = groupSelectedIds,
+                    isScanning        = isScanning,
+                    isDeleting        = isDeleting,
+                    modifier          = Modifier.weight(1f),
+                    onSelectionChange = { groupSelectedIds = it },
+                    onViewGroup       = { group ->
+                        viewerImages = group; viewerIndex = 0; viewerOpen = true
+                    },
+                    onSelectGroup     = { groupIds -> groupSelectedIds = groupSelectedIds + groupIds },
+                    onUnselectGroup   = { groupIds -> groupSelectedIds = groupSelectedIds - groupIds },
+                    onDelete          = { launchDelete(groupSelectedIds) }
+                )
             }
+        }
 
-            // ── Floating Delete Button
-            if (activeTab == ActiveTab.ALL_IMAGES) {
-                AnimatedVisibility(
-                    visible  = selectionMode && selectedImages.isNotEmpty(),
-                    enter    = slideInVertically(initialOffsetY = { it }, animationSpec = tween(300)) +
-                            fadeIn(animationSpec = tween(300)),
-                    exit     = slideOutVertically(targetOffsetY = { it }, animationSpec = tween(250)) +
-                            fadeOut(animationSpec = tween(250)),
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .navigationBarsPadding()
-                        .padding(bottom = 28.dp)
-                ) {
-                    FloatingDeleteButton(
-                        count      = selectedImages.size,
-                        isDeleting = isDeleting,
-                        onClick    = { launchDelete(selectedImages) }
-                    )
-                }
+        // ── Floating Delete Button ──
+        if (activeTab == ActiveTab.ALL_IMAGES) {
+            AnimatedVisibility(
+                visible  = !viewerOpen && selectionMode && selectedImages.isNotEmpty(),
+                enter    = slideInVertically(initialOffsetY = { it }, animationSpec = tween(300)) +
+                        fadeIn(animationSpec = tween(300)),
+                exit     = slideOutVertically(targetOffsetY = { it }, animationSpec = tween(250)) +
+                        fadeOut(animationSpec = tween(250)),
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(bottom = 28.dp)
+            ) {
+                FloatingDeleteButton(
+                    count      = selectedImages.size,
+                    isDeleting = isDeleting,
+                    onClick    = { launchDelete(selectedImages) }
+                )
             }
+        }
 
-        } else {
+        // ── Fullscreen viewer — drawn on top, grid stays alive underneath ──
+        if (viewerOpen) {
             FullscreenViewer(
                 viewerImages = viewerImages,
                 viewerIndex  = viewerIndex,
@@ -583,30 +593,83 @@ private fun FloatingDeleteButton(
 // Sort bar — visual only
 // ─────────────────────────────────────────────────────────────────────────────
 @Composable
-private fun SortBar() {
-    Box(
-        modifier         = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp)
-            .height(44.dp)
-            .clip(RoundedCornerShape(22.dp))
-            .background(SortPillBg),
-        contentAlignment = Alignment.Center
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text       = "Sort By: Newest",
-                color      = Color.White,
-                fontSize   = 14.sp,
-                fontWeight = FontWeight.Medium
-            )
-            Spacer(modifier = Modifier.width(4.dp))
-            Icon(
-                imageVector        = Icons.Filled.KeyboardArrowDown,
-                contentDescription = "Sort options",
-                tint               = Color.White,
-                modifier           = Modifier.size(18.dp)
-            )
+private fun SortBar(
+    sortOrder:     SortOrder,
+    onSortSelected: (SortOrder) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+
+    val label = when (sortOrder) {
+        SortOrder.NEWEST     -> "Newest"
+        SortOrder.OLDEST     -> "Oldest"
+        SortOrder.SIZE_LARGE -> "Size (Large)"
+        SortOrder.SIZE_SMALL -> "Size (Small)"
+    }
+
+    Box(modifier = Modifier.padding(horizontal = 16.dp)) {
+        Box(
+            modifier         = Modifier
+                .fillMaxWidth()
+                .height(44.dp)
+                .clip(RoundedCornerShape(22.dp))
+                .background(SortPillBg)
+                .clickable { expanded = true },
+            contentAlignment = Alignment.Center
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text       = "Sort By: $label",
+                    color      = Color.White,
+                    fontSize   = 14.sp,
+                    fontWeight = FontWeight.Medium
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Icon(
+                    imageVector        = Icons.Filled.KeyboardArrowDown,
+                    contentDescription = "Sort options",
+                    tint               = Color.White,
+                    modifier           = Modifier.size(18.dp)
+                )
+            }
+        }
+
+        DropdownMenu(
+            expanded         = expanded,
+            onDismissRequest = { expanded = false },
+            modifier         = Modifier.background(Color(0xFF1C2340))
+        ) {
+            listOf(
+                SortOrder.NEWEST     to "Newest",
+                SortOrder.OLDEST     to "Oldest",
+                SortOrder.SIZE_LARGE to "Size (Large)",
+                SortOrder.SIZE_SMALL to "Size (Small)"
+            ).forEach { (order, label) ->
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            text      = label,
+                            color     = if (sortOrder == order) TabActive1 else Color.White,
+                            fontSize  = 14.sp,
+                            fontWeight = if (sortOrder == order) FontWeight.SemiBold
+                            else FontWeight.Normal
+                        )
+                    },
+                    onClick = {
+                        onSortSelected(order)
+                        expanded = false
+                    },
+                    trailingIcon = {
+                        if (sortOrder == order) {
+                            Icon(
+                                imageVector        = Icons.Filled.CheckCircle,
+                                contentDescription = null,
+                                tint               = TabActive1,
+                                modifier           = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+                )
+            }
         }
     }
 }
@@ -618,23 +681,41 @@ private fun SortBar() {
 @Composable
 private fun AllImagesGrid(
     images:            List<ImageItem>,
+    sortOrder:         SortOrder,
     selectionMode:     Boolean,
     selectedImages:    Set<Long>,
-    onImageClick:      (Int) -> Unit,
+    gridState:         LazyGridState,
+    onImageClick: (Int, List<ImageItem>) -> Unit,
     onImageLongClick:  (Long) -> Unit,
     onSelectionChange: (Set<Long>) -> Unit
 ) {
     if (images.isEmpty()) return
 
+
+    LaunchedEffect(sortOrder) {
+        gridState.scrollToItem(0)
+    }
+
+    // Apply sort — derive a new list, original stays untouched in ViewModel
+    val sortedImages = remember(images, sortOrder) {
+        when (sortOrder) {
+            SortOrder.NEWEST     -> images  // already newest-first from MediaStore
+            SortOrder.OLDEST     -> images.reversed()
+            SortOrder.SIZE_LARGE -> images.sortedByDescending { it.size }
+            SortOrder.SIZE_SMALL -> images.sortedBy { it.size }
+        }
+    }
+
     LazyVerticalGrid(
         columns               = GridCells.Fixed(3),
+        state                 = gridState,
         modifier              = Modifier.fillMaxSize(),
         contentPadding        = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
         verticalArrangement   = Arrangement.spacedBy(8.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         itemsIndexed(
-            items = images,
+            items = sortedImages,
             key   = { _, image -> image.id }
         ) { index, image ->
             val isSelected = selectedImages.contains(image.id)
@@ -643,7 +724,6 @@ private fun AllImagesGrid(
                 modifier = Modifier
                     .aspectRatio(1f)
                     .graphicsLayer {
-                        // Lifts the card off the background — creates the 3D shadow
                         shadowElevation = 12f
                         shape           = RoundedCornerShape(14.dp)
                         clip            = true
@@ -652,8 +732,8 @@ private fun AllImagesGrid(
                         width = 1.dp,
                         brush = Brush.linearGradient(
                             colors = listOf(
-                                Color(0x40FFFFFF),  // subtle white highlight on top-left edge
-                                Color(0x10FFFFFF),  // fades to near-transparent on bottom-right
+                                Color(0x40FFFFFF),
+                                Color(0x10FFFFFF)
                             )
                         ),
                         shape = RoundedCornerShape(14.dp)
@@ -668,7 +748,7 @@ private fun AllImagesGrid(
                                     selectedImages + image.id
                                 onSelectionChange(updated)
                             } else {
-                                onImageClick(index)
+                                onImageClick(index, sortedImages)
                             }
                         },
                         onLongClick = { onImageLongClick(image.id) }
@@ -694,6 +774,31 @@ private fun AllImagesGrid(
                             .align(Alignment.TopEnd)
                             .padding(6.dp)
                             .size(22.dp)
+                    )
+                }
+                // ── Size badge (only when sorting by size) ──
+                if (sortOrder == SortOrder.SIZE_LARGE || sortOrder == SortOrder.SIZE_SMALL) {
+                    val sizeText = remember(image.size) {
+                        when {
+                            image.size >= 1_048_576 -> "%.1f MB".format(image.size / 1_048_576f)
+                            image.size >= 1_024     -> "%.0f KB".format(image.size / 1_024f)
+                            else                    -> "${image.size} B"
+                        }
+                    }
+
+                    Text(
+                        text       = sizeText,
+                        color      = Color.White,
+                        fontSize   = 9.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier   = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(4.dp)
+                            .background(
+                                color  = Color(0x99000000),   // 60% opaque black
+                                shape  = RoundedCornerShape(12.dp)
+                            )
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
                     )
                 }
             }
