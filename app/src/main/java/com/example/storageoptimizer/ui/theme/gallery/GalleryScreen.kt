@@ -198,10 +198,14 @@ fun GalleryScreen(
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            SortBar(
-                sortOrder      = sortOrder,
-                onSortSelected = { sortOrder = it }
-            )
+            // Only show the shared sort bar for All Images tab
+            // Duplicates and Groups manage their own sort internally
+            if (activeTab == ActiveTab.ALL_IMAGES) {
+                SortBar(
+                    sortOrder      = sortOrder,
+                    onSortSelected = { sortOrder = it }
+                )
+            }
 
             Spacer(modifier = Modifier.height(12.dp))
 
