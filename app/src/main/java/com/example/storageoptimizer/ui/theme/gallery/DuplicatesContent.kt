@@ -5,6 +5,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -95,6 +96,13 @@ fun DuplicatesContent(
     // ── Sort state lives here — completely independent of the All Images tab
     var sortOrder    by remember { mutableStateOf(DuplicateSortOrder.MOST_DUPLICATES) }
     var dropdownOpen by remember { mutableStateOf(false) }
+
+
+    val listState    = rememberLazyListState()
+    // Reset scroll to top whenever sort order changes
+    LaunchedEffect(sortOrder) {
+        listState.scrollToItem(0)
+    }
 
     val sortLabel = when (sortOrder) {
         DuplicateSortOrder.MOST_DUPLICATES  -> "Most Duplicates"
@@ -210,6 +218,7 @@ fun DuplicatesContent(
 
             // ── Scrollable group list
             LazyColumn(
+                state          = listState,
                 modifier       = Modifier
                     .fillMaxWidth()
                     .weight(1f),

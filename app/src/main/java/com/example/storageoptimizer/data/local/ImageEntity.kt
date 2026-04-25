@@ -9,5 +9,6 @@ data class ImageEntity(
     val uri:            String,
     val hash:           Long?,
     val size:           Long,
-    val dateModified:   Long    // seconds since epoch — used for change detection in V10
+    val dateModified:   Long,   // seconds since epoch — V10 change detection
+    val dateAdded:      Long    // seconds since epoch — V11 Groups date-bucketing
 )

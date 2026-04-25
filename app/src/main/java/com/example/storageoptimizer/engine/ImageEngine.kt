@@ -15,7 +15,8 @@ object ImageEngine {
         val projection = arrayOf(
             MediaStore.Images.Media._ID,
             MediaStore.Images.Media.SIZE,
-            MediaStore.Images.Media.DATE_MODIFIED   // seconds since epoch
+            MediaStore.Images.Media.DATE_MODIFIED,  // seconds since epoch — change detection
+            MediaStore.Images.Media.DATE_ADDED      // seconds since epoch — date-bucketing
         )
         val cursor = contentResolver.query(
             MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
@@ -26,14 +27,16 @@ object ImageEngine {
             val idCol           = it.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
             val sizeCol         = it.getColumnIndexOrThrow(MediaStore.Images.Media.SIZE)
             val dateModifiedCol = it.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_MODIFIED)
+            val dateAddedCol    = it.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_ADDED)
             while (it.moveToNext()) {
-                val id   = it.getLong(idCol)
-                val size = it.getLong(sizeCol)
-                val dm   = it.getLong(dateModifiedCol)
-                val uri  = Uri.withAppendedPath(
+                val id  = it.getLong(idCol)
+                val sz  = it.getLong(sizeCol)
+                val dm  = it.getLong(dateModifiedCol)
+                val da  = it.getLong(dateAddedCol)
+                val uri = Uri.withAppendedPath(
                     MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id.toString()
                 )
-                imageList.add(ImageItem(id, uri, null, size, dm))
+                imageList.add(ImageItem(id, uri, null, sz, dm, da))
             }
         }
         return imageList

@@ -7,7 +7,7 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [ImageEntity::class], version = 2, exportSchema = false)
+@Database(entities = [ImageEntity::class], version = 3, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
 
     abstract fun imageDao(): ImageDao
@@ -17,12 +17,17 @@ abstract class AppDatabase : RoomDatabase() {
         @Volatile
         private var INSTANCE: AppDatabase? = null
 
-        // Migration from V9 (schema 1) to V10 (schema 2).
-        // Adds the dateModified column with a default of 0 for existing rows.
-        // Without this migration Room crashes with "Expected identity hash ..." on upgrade.
+        // V9 → V10: added dateModified
         private val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE images ADD COLUMN dateModified INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        // V10 → V11: added dateAdded (needed for Groups date-bucketing)
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE images ADD COLUMN dateAdded INTEGER NOT NULL DEFAULT 0")
             }
         }
 
@@ -33,7 +38,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "storage_optimizer.db"
                 )
-                    .addMigrations(MIGRATION_1_2)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                     .build()
                     .also { INSTANCE = it }
             }

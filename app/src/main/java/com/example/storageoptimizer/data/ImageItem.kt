@@ -7,7 +7,8 @@ data class ImageItem(
     val uri:          Uri,
     val hash:         Long? = null,
     val size:         Long  = 0L,
-    val dateModified: Long  = 0L   // seconds since epoch, from MediaStore DATE_MODIFIED
+    val dateModified: Long  = 0L,  // seconds since epoch — used by V10 change detection
+    val dateAdded:    Long  = 0L   // seconds since epoch — used by Groups date-bucketing
 )
 
 // Which tab is active inside GalleryScreen

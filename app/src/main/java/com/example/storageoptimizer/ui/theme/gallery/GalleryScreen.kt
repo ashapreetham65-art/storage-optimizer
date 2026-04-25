@@ -265,13 +265,16 @@ fun GalleryScreen(
 
                 ActiveTab.GROUPS -> GroupsContent(
                     groups            = similarGroups,
+                    allImages         = images,
                     selectedIds       = groupSelectedIds,
                     isScanning        = isScanning,
                     isDeleting        = isDeleting,
                     modifier          = Modifier.weight(1f),
                     onSelectionChange = { groupSelectedIds = it },
-                    onViewGroup       = { group ->
-                        viewerImages = group; viewerIndex = 0; viewerOpen = true
+                    onViewGroup = { group, startIndex ->
+                        viewerImages = group
+                        viewerIndex  = startIndex
+                        viewerOpen   = true
                     },
                     onSelectGroup     = { groupIds -> groupSelectedIds = groupSelectedIds + groupIds },
                     onUnselectGroup   = { groupIds -> groupSelectedIds = groupSelectedIds - groupIds },
@@ -324,7 +327,7 @@ private fun SlidingTabPill(
     val tabs = listOf(
         ActiveTab.ALL_IMAGES to "All",
         ActiveTab.DUPLICATES  to "Duplicates",
-        ActiveTab.GROUPS      to "Similar"
+        ActiveTab.GROUPS      to "Groups"
     )
     val tabCount    = tabs.size
     val activeIndex = tabs.indexOfFirst { it.first == activeTab }.toFloat()

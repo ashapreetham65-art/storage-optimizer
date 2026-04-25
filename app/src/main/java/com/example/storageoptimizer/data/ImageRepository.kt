@@ -88,7 +88,8 @@ class ImageRepository(private val dao: ImageDao) {
         uri          = uri.toString(),
         hash         = hash,
         size         = size,
-        dateModified = dateModified
+        dateModified = dateModified,
+        dateAdded    = dateAdded
     )
 
     private fun ImageEntity.toImageItem() = ImageItem(
@@ -96,6 +97,7 @@ class ImageRepository(private val dao: ImageDao) {
         uri          = Uri.parse(uri),
         hash         = hash,
         size         = size,
-        dateModified = dateModified
+        dateModified = dateModified,
+        dateAdded    = dateAdded
     )
 }
