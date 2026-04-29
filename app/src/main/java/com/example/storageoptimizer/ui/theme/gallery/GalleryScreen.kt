@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.keyframes
 import androidx.compose.animation.core.RepeatMode
@@ -60,8 +61,11 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
 import com.example.storageoptimizer.data.ActiveTab
 import com.example.storageoptimizer.data.ImageItem
@@ -78,6 +82,14 @@ private val TabTextInact  = Color(0xFF8A90A8)
 private val SortPillBg    = Color(0xFF1C2340)
 private val AccentBlue    = Color(0xFF4FC3F7)
 private val CardOverlay   = Color(0x66000000)
+
+// Dialog palette
+private val DialogBg      = Color(0xFF1C2138)
+private val DialogBorder  = Color(0xFF2E3555)
+private val DangerRed     = Color(0xFFEF5350)
+private val DangerRedDark = Color(0xFFB71C1C)
+private val SubText       = Color(0xFF8A90A8)
+private val HeaderText    = Color(0xFFEEF0F8)
 
 //for sorting of images in dropdown
 enum class SortOrder { NEWEST, OLDEST, SIZE_LARGE, SIZE_SMALL }
@@ -116,6 +128,13 @@ fun GalleryScreen(
     var deleteCancelFlag  by remember { mutableStateOf(false) }
     var isDeleting        by remember { mutableStateOf(false) }
 
+    // ── Custom confirm dialog state ──────────────────────────────────────────
+    // We always show our own dialog first, then call MediaStore after the user
+    // confirms. This works correctly even when MANAGE_EXTERNAL_STORAGE is held
+    // (which causes MediaStore to skip its own system dialog).
+    var showDeleteDialog  by remember { mutableStateOf(false) }
+    var pendingDeleteQueue by remember { mutableStateOf(setOf<Long>()) }
+
     // ---------- launchers ----------
 
     val deleteRequestLauncher = rememberLauncherForActivityResult(
@@ -129,9 +148,17 @@ fun GalleryScreen(
         contract = ActivityResultContracts.RequestPermission()
     ) { isGranted -> if (isGranted) viewModel.refresh(contentResolver) }
 
-    // ---------- delete helper ----------
+    // ---------- delete helpers ----------
 
-    fun launchDelete(toDelete: Set<Long>) {
+    // Step 1: show our custom confirm dialog
+    fun requestDelete(toDelete: Set<Long>) {
+        if (toDelete.isEmpty()) return
+        pendingDeleteQueue = toDelete
+        showDeleteDialog   = true
+    }
+
+    // Step 2: called when user taps "Delete" in our dialog
+    fun executeDelete(toDelete: Set<Long>) {
         if (toDelete.isEmpty()) return
         pendingDeleteIds = toDelete
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -180,7 +207,6 @@ fun GalleryScreen(
             .background(Brush.verticalGradient(listOf(BgTop, BgBottom)))
     ) {
 
-        // ── Grid layer — always in composition, just hidden behind viewer ──
         Column(modifier = Modifier.fillMaxSize()) {
 
             Spacer(modifier = Modifier.statusBarsPadding())
@@ -198,8 +224,6 @@ fun GalleryScreen(
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // Only show the shared sort bar for All Images tab
-            // Duplicates and Groups manage their own sort internally
             if (activeTab == ActiveTab.ALL_IMAGES) {
                 SortBar(
                     sortOrder      = sortOrder,
@@ -260,7 +284,7 @@ fun GalleryScreen(
                         viewerImages = group; viewerIndex = 0; viewerOpen = true
                     },
                     onUnselectGroup   = { groupIds -> dupSelectedIds = dupSelectedIds - groupIds },
-                    onDelete          = { launchDelete(dupSelectedIds) }
+                    onDelete          = { requestDelete(dupSelectedIds) }
                 )
 
                 ActiveTab.GROUPS -> GroupsContent(
@@ -278,7 +302,7 @@ fun GalleryScreen(
                     },
                     onSelectGroup     = { groupIds -> groupSelectedIds = groupSelectedIds + groupIds },
                     onUnselectGroup   = { groupIds -> groupSelectedIds = groupSelectedIds - groupIds },
-                    onDelete          = { launchDelete(groupSelectedIds) }
+                    onDelete          = { requestDelete(groupSelectedIds) }
                 )
             }
         }
@@ -299,18 +323,146 @@ fun GalleryScreen(
                 FloatingDeleteButton(
                     count      = selectedImages.size,
                     isDeleting = isDeleting,
-                    onClick    = { launchDelete(selectedImages) }
+                    onClick    = { requestDelete(selectedImages) }
                 )
             }
         }
 
-        // ── Fullscreen viewer — drawn on top, grid stays alive underneath ──
+        // ── Fullscreen viewer ──
         if (viewerOpen) {
             FullscreenViewer(
                 viewerImages = viewerImages,
                 viewerIndex  = viewerIndex,
                 onClose      = { viewerOpen = false }
             )
+        }
+
+        // ── Custom delete confirmation dialog ─────────────────────────────────
+        if (showDeleteDialog) {
+            DeleteConfirmDialog(
+                count     = pendingDeleteQueue.size,
+                onConfirm = {
+                    showDeleteDialog = false
+                    executeDelete(pendingDeleteQueue)
+                    pendingDeleteQueue = emptySet()
+                },
+                onDismiss = {
+                    showDeleteDialog   = false
+                    pendingDeleteQueue = emptySet()
+                }
+            )
+        }
+    }
+}
+
+// ── Custom delete confirmation dialog ─────────────────────────────────────────
+@Composable
+private fun DeleteConfirmDialog(
+    count:     Int,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties       = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 32.dp)
+                .clip(RoundedCornerShape(24.dp))
+                .background(DialogBg)
+                .border(1.dp, DialogBorder, RoundedCornerShape(24.dp))
+                .padding(28.dp)
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+
+                // Warning icon
+                Box(
+                    modifier = Modifier
+                        .size(64.dp)
+                        .clip(CircleShape)
+                        .background(DangerRed.copy(alpha = 0.12f))
+                        .border(1.dp, DangerRed.copy(alpha = 0.35f), CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector        = Icons.Filled.Delete,
+                        contentDescription = null,
+                        tint               = DangerRed,
+                        modifier           = Modifier.size(30.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                Text(
+                    text       = "Delete ${if (count == 1) "Photo" else "$count Photos"}?",
+                    color      = HeaderText,
+                    fontSize   = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    textAlign  = TextAlign.Center
+                )
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Text(
+                    text      = if (count == 1)
+                        "This photo will be permanently deleted\nfrom your device."
+                    else
+                        "These $count photos will be permanently\ndeleted from your device.",
+                    color     = SubText,
+                    fontSize  = 14.sp,
+                    textAlign = TextAlign.Center,
+                    lineHeight = 21.sp
+                )
+
+                Spacer(modifier = Modifier.height(28.dp))
+
+                // Buttons row
+                Row(
+                    modifier              = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    // Cancel
+                    OutlinedButton(
+                        onClick  = onDismiss,
+                        shape    = RoundedCornerShape(14.dp),
+                        border   = androidx.compose.foundation.BorderStroke(
+                            1.dp, DialogBorder
+                        ),
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(50.dp)
+                    ) {
+                        Text(
+                            text       = "Cancel",
+                            color      = HeaderText,
+                            fontSize   = 15.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+
+                    // Delete
+                    Button(
+                        onClick  = onConfirm,
+                        shape    = RoundedCornerShape(14.dp),
+                        colors   = ButtonDefaults.buttonColors(
+                            containerColor = DangerRed
+                        ),
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(50.dp)
+                    ) {
+                        Text(
+                            text       = "Delete",
+                            color      = Color.White,
+                            fontSize   = 15.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
         }
     }
 }
@@ -405,17 +557,7 @@ private fun TopBar(
     onTabSelected:  (ActiveTab) -> Unit,
     onCancelSelect: () -> Unit
 ) {
-    // The back button + gap together take 44 + 12 = 56.dp from the left edge.
-    // In selection mode we replace the tab pill with a full-width row that
-    // must account for those 56.dp so "Selected: x/x" is truly centred.
-    //
-    // Solution: wrap the entire bar in a Box so both the back button and the
-    // selection row are siblings positioned relative to the same container.
-    // The selection row fills full width; the text uses Alignment.Center on
-    // the Box so it is centred regardless of button sizes.
-
     if (!selectionMode) {
-        // ── Normal mode: back button + tab pill side by side
         Row(
             modifier          = Modifier
                 .fillMaxWidth()
@@ -447,16 +589,12 @@ private fun TopBar(
             )
         }
     } else {
-        // ── Selection mode: full-width overlay so count is pixel-perfect centred.
-        // Back button stays on the left, cancel on the right, count in a Box
-        // that fills the remaining space with true Alignment.Center.
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp)
                 .height(44.dp)
         ) {
-            // Back button — left edge
             Box(
                 modifier         = Modifier
                     .align(Alignment.CenterStart)
@@ -474,7 +612,6 @@ private fun TopBar(
                 )
             }
 
-            // Selected count — absolutely centred in the full bar width
             Text(
                 text       = "Selected: $selectedCount / $totalCount",
                 color      = Color.White,
@@ -483,7 +620,6 @@ private fun TopBar(
                 modifier   = Modifier.align(Alignment.Center)
             )
 
-            // Cancel button — right edge
             Box(
                 modifier         = Modifier
                     .align(Alignment.CenterEnd)
@@ -520,10 +656,10 @@ private fun FloatingDeleteButton(
         targetValue   = 1f,
         animationSpec = infiniteRepeatable(
             animation = keyframes {
-                durationMillis = 4000       // total cycle = 4 seconds
-                0.0f   at 0                 // start
-                1.0f   at 1500              // sweep completes in 1.5s
-                1.0f   at 4000
+                durationMillis = 4000
+                0.0f at 0
+                1.0f at 1500
+                1.0f at 4000
             },
             repeatMode = RepeatMode.Restart
         ),
@@ -538,7 +674,7 @@ private fun FloatingDeleteButton(
             (shimmer + 0.1f).coerceAtMost(1f)  to Color(0xFFE53935),
             1.0f                               to Color(0xFFEE2E2E)
         ),
-        start = Offset(x = lerp(-200f, 800f, shimmer), y = 0f),  // starts off-screen left
+        start = Offset(x = lerp(-200f, 800f, shimmer), y = 0f),
         end   = Offset(800f, 0f)
     )
 
@@ -558,16 +694,13 @@ private fun FloatingDeleteButton(
         modifier       = Modifier
             .padding(horizontal = 48.dp, vertical = 24.dp)
             .height(58.dp)
-            .background(
-                brush = animatedBrush,
-                shape = CircleShape
-            )
+            .background(brush = animatedBrush, shape = CircleShape)
     ) {
         if (isDeleting) {
             CircularProgressIndicator(
-                modifier      = Modifier.size(20.dp),
-                strokeWidth   = 2.dp,
-                color         = Color.White
+                modifier    = Modifier.size(20.dp),
+                strokeWidth = 2.dp,
+                color       = Color.White
             )
             Spacer(modifier = Modifier.width(10.dp))
             Text(
@@ -597,11 +730,11 @@ private fun FloatingDeleteButton(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Sort bar — visual only
+// Sort bar
 // ─────────────────────────────────────────────────────────────────────────────
 @Composable
 private fun SortBar(
-    sortOrder:     SortOrder,
+    sortOrder:      SortOrder,
     onSortSelected: (SortOrder) -> Unit
 ) {
     var expanded by remember { mutableStateOf(false) }
@@ -650,21 +783,18 @@ private fun SortBar(
                 SortOrder.OLDEST     to "Oldest",
                 SortOrder.SIZE_LARGE to "Size (Large)",
                 SortOrder.SIZE_SMALL to "Size (Small)"
-            ).forEach { (order, label) ->
+            ).forEach { (order, lbl) ->
                 DropdownMenuItem(
                     text = {
                         Text(
-                            text      = label,
-                            color     = if (sortOrder == order) TabActive1 else Color.White,
-                            fontSize  = 14.sp,
+                            text       = lbl,
+                            color      = if (sortOrder == order) TabActive1 else Color.White,
+                            fontSize   = 14.sp,
                             fontWeight = if (sortOrder == order) FontWeight.SemiBold
                             else FontWeight.Normal
                         )
                     },
-                    onClick = {
-                        onSortSelected(order)
-                        expanded = false
-                    },
+                    onClick = { onSortSelected(order); expanded = false },
                     trailingIcon = {
                         if (sortOrder == order) {
                             Icon(
@@ -692,21 +822,17 @@ private fun AllImagesGrid(
     selectionMode:     Boolean,
     selectedImages:    Set<Long>,
     gridState:         LazyGridState,
-    onImageClick: (Int, List<ImageItem>) -> Unit,
+    onImageClick:      (Int, List<ImageItem>) -> Unit,
     onImageLongClick:  (Long) -> Unit,
     onSelectionChange: (Set<Long>) -> Unit
 ) {
     if (images.isEmpty()) return
 
+    LaunchedEffect(sortOrder) { gridState.scrollToItem(0) }
 
-    LaunchedEffect(sortOrder) {
-        gridState.scrollToItem(0)
-    }
-
-    // Apply sort — derive a new list, original stays untouched in ViewModel
     val sortedImages = remember(images, sortOrder) {
         when (sortOrder) {
-            SortOrder.NEWEST     -> images  // already newest-first from MediaStore
+            SortOrder.NEWEST     -> images
             SortOrder.OLDEST     -> images.reversed()
             SortOrder.SIZE_LARGE -> images.sortedByDescending { it.size }
             SortOrder.SIZE_SMALL -> images.sortedBy { it.size }
@@ -721,10 +847,7 @@ private fun AllImagesGrid(
         verticalArrangement   = Arrangement.spacedBy(8.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        itemsIndexed(
-            items = sortedImages,
-            key   = { _, image -> image.id }
-        ) { index, image ->
+        itemsIndexed(items = sortedImages, key = { _, image -> image.id }) { index, image ->
             val isSelected = selectedImages.contains(image.id)
 
             Box(
@@ -738,10 +861,7 @@ private fun AllImagesGrid(
                     .border(
                         width = 1.dp,
                         brush = Brush.linearGradient(
-                            colors = listOf(
-                                Color(0x40FFFFFF),
-                                Color(0x10FFFFFF)
-                            )
+                            colors = listOf(Color(0x40FFFFFF), Color(0x10FFFFFF))
                         ),
                         shape = RoundedCornerShape(14.dp)
                     )
@@ -749,10 +869,8 @@ private fun AllImagesGrid(
                     .combinedClickable(
                         onClick = {
                             if (selectionMode) {
-                                val updated = if (isSelected)
-                                    selectedImages - image.id
-                                else
-                                    selectedImages + image.id
+                                val updated = if (isSelected) selectedImages - image.id
+                                else            selectedImages + image.id
                                 onSelectionChange(updated)
                             } else {
                                 onImageClick(index, sortedImages)
@@ -768,11 +886,7 @@ private fun AllImagesGrid(
                     modifier           = Modifier.fillMaxSize()
                 )
                 if (isSelected) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(CardOverlay)
-                    )
+                    Box(modifier = Modifier.fillMaxSize().background(CardOverlay))
                     Icon(
                         imageVector        = Icons.Filled.CheckCircle,
                         contentDescription = "Selected",
@@ -783,7 +897,6 @@ private fun AllImagesGrid(
                             .size(22.dp)
                     )
                 }
-                // ── Size badge (only when sorting by size) ──
                 if (sortOrder == SortOrder.SIZE_LARGE || sortOrder == SortOrder.SIZE_SMALL) {
                     val sizeText = remember(image.size) {
                         when {
@@ -792,7 +905,6 @@ private fun AllImagesGrid(
                             else                    -> "${image.size} B"
                         }
                     }
-
                     Text(
                         text       = sizeText,
                         color      = Color.White,
@@ -801,10 +913,7 @@ private fun AllImagesGrid(
                         modifier   = Modifier
                             .align(Alignment.BottomEnd)
                             .padding(4.dp)
-                            .background(
-                                color  = Color(0x99000000),   // 60% opaque black
-                                shape  = RoundedCornerShape(12.dp)
-                            )
+                            .background(Color(0x99000000), RoundedCornerShape(12.dp))
                             .padding(horizontal = 6.dp, vertical = 2.dp)
                     )
                 }

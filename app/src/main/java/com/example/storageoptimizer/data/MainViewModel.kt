@@ -7,6 +7,7 @@ import android.provider.MediaStore
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.example.storageoptimizer.engine.FileEngine
 import com.example.storageoptimizer.engine.ImageEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -31,7 +32,7 @@ class MainViewModel(
 
     private val hashSemaphore = Semaphore(4)
 
-    // ── StateFlows ───────────────────────────────────────────────────────────
+    // ── Image StateFlows ─────────────────────────────────────────────────────
 
     private val _images        = MutableStateFlow<List<ImageItem>>(emptyList())
     val images: StateFlow<List<ImageItem>> = _images.asStateFlow()
@@ -48,12 +49,18 @@ class MainViewModel(
     private val _isLoadingFromDb = MutableStateFlow(false)
     val isLoadingFromDb: StateFlow<Boolean> = _isLoadingFromDb.asStateFlow()
 
-    // Epoch milliseconds of the last FULL scan (scan() only, not refresh()).
-    // Loaded from SharedPreferences on startup so it survives app restarts.
     private val _lastScannedAt = MutableStateFlow<Long?>(
         prefs.getLong(KEY_LAST_SCANNED, -1L).takeIf { it != -1L }
     )
     val lastScannedAt: StateFlow<Long?> = _lastScannedAt.asStateFlow()
+
+    // ── File StateFlows ──────────────────────────────────────────────────────
+
+    private val _files          = MutableStateFlow<List<FileItem>>(emptyList())
+    val files: StateFlow<List<FileItem>> = _files.asStateFlow()
+
+    private val _isScanningFiles = MutableStateFlow(false)
+    val isScanningFiles: StateFlow<Boolean> = _isScanningFiles.asStateFlow()
 
     // ── Init ─────────────────────────────────────────────────────────────────
 
@@ -65,7 +72,6 @@ class MainViewModel(
             val saved = withContext(Dispatchers.IO) { repository.loadFromDb() }
 
             if (saved.isNotEmpty()) {
-                // Re-derive groups in parallel — no re-hashing, just BFS on saved hashes
                 val exact: List<List<ImageItem>>
                 val similar: List<List<ImageItem>>
                 withContext(Dispatchers.IO) {
@@ -76,7 +82,6 @@ class MainViewModel(
                         similar = sd.await()
                     }
                 }
-                // Store groups in memory only — no DB write on startup (V9 bug fixed)
                 repository.storeGroupsInMemory(exact, similar)
 
                 _images.value        = saved
@@ -96,8 +101,27 @@ class MainViewModel(
             group.sortedByDescending { it.size }.drop(1).sumOf { it.size }
         }
 
+    val totalFileSize: Long
+        get() = _files.value.sumOf { it.size }
+
+    val fileCount: Int
+        get() = _files.value.size
+
+    // ── File scanning ────────────────────────────────────────────────────────
+
+    fun scanFiles(contentResolver: ContentResolver) {
+        if (_isScanningFiles.value) return
+        viewModelScope.launch {
+            _isScanningFiles.value = true
+            val scanned = withContext(Dispatchers.IO) {
+                FileEngine.loadFiles(contentResolver)
+            }
+            _files.value           = scanned
+            _isScanningFiles.value = false
+        }
+    }
+
     // ── Full scan (first time / HomeScreen "Scan Storage") ───────────────────
-    // Used when DB is empty. Hashes every image and saves everything to DB.
 
     fun scan(contentResolver: ContentResolver) {
         if (_isScanning.value) return
@@ -129,31 +153,26 @@ class MainViewModel(
             _similarGroups.value = similar
             val nowMs = System.currentTimeMillis()
             _lastScannedAt.value = nowMs
-            prefs.edit().putLong(KEY_LAST_SCANNED, nowMs).apply()  // persist across restarts
+            prefs.edit().putLong(KEY_LAST_SCANNED, nowMs).apply()
             _isScanning.value    = false
         }
     }
 
-    // ── Incremental refresh (Gallery "Refresh" button) ───────────────────────
-    // Compares current MediaStore state against DB.
-    // Only hashes images that are new or modified — reuses existing hashes for the rest.
+    // ── Incremental refresh ──────────────────────────────────────────────────
 
     fun refresh(contentResolver: ContentResolver) {
         if (_isScanning.value) return
         viewModelScope.launch {
             _isScanning.value = true
 
-            // Step 1: lightweight metadata-only scan (no hashing)
             val currentFromDevice = withContext(Dispatchers.IO) {
                 ImageEngine.loadImages(contentResolver)
             }
 
-            // Step 2: what we already know about
-            val dbImages = repository.getImages()
+            val dbImages   = repository.getImages()
             val dbMap      = dbImages.associateBy { it.id }
             val currentMap = currentFromDevice.associateBy { it.id }
 
-            // Step 3: classify changes
             val newIds      = currentMap.keys - dbMap.keys
             val deletedIds  = dbMap.keys - currentMap.keys
             val modifiedIds = currentMap.keys
@@ -161,13 +180,11 @@ class MainViewModel(
                 .filter { id ->
                     val current = currentMap.getValue(id)
                     val stored  = dbMap.getValue(id)
-                    // Modified = size OR dateModified changed
                     current.size != stored.size || current.dateModified != stored.dateModified
                 }.toSet()
 
             val toHashIds = newIds + modifiedIds
 
-            // Step 4: hash only what needs it
             val rehashed = if (toHashIds.isNotEmpty()) {
                 val toHashItems = toHashIds.map { id -> currentMap.getValue(id) }
                 hashImages(toHashItems, contentResolver)
@@ -177,26 +194,22 @@ class MainViewModel(
 
             val rehashedMap = rehashed.associateBy { it.id }
 
-            // Step 5: build final merged list
-            // Start from DB images, remove deleted, replace modified, add new
             val finalImages = (dbImages
                 .filter { it.id !in deletedIds && it.id !in modifiedIds }
                     + rehashedMap.values)
-                .sortedByDescending { it.id }   // newest first
+                .sortedByDescending { it.id }
 
-            // Step 6: update DB incrementally (no clearAll)
-            val toUpsert = rehashed  // new + modified, now with hashes
+            val toUpsert = rehashed
             withContext(Dispatchers.IO) {
                 repository.applyIncrementalUpdate(
                     finalImages   = finalImages,
                     toUpsert      = toUpsert,
                     deletedIds    = deletedIds,
-                    exactGroups   = emptyList(),   // rebuilt below
+                    exactGroups   = emptyList(),
                     similarGroups = emptyList()
                 )
             }
 
-            // Step 7: rebuild groups from the merged image set
             val exact: List<List<ImageItem>>
             val similar: List<List<ImageItem>>
             withContext(Dispatchers.IO) {
@@ -208,7 +221,6 @@ class MainViewModel(
                 }
             }
 
-            // Update in-memory groups (they were already set to empty above)
             repository.storeGroupsInMemory(exact, similar)
 
             _images.value        = finalImages
@@ -221,8 +233,7 @@ class MainViewModel(
         }
     }
 
-    // ── Shared hashing helper ─────────────────────────────────────────────────
-    // Used by both scan() and refresh() — keeps the semaphore logic in one place.
+    // ── Hashing helper ───────────────────────────────────────────────────────
 
     private suspend fun hashImages(
         items: List<ImageItem>,

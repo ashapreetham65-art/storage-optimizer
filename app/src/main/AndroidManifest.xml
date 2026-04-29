@@ -4,6 +4,17 @@
 
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>
 
+    <!-- Required to read ALL files on Android 9 and below -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+
+    <!-- Required on Android 13+ to read non-media files (documents, APKs, etc.)
+     Without this, MediaStore.Files only returns files created by your own app. -->
+    <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
+
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
+
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32"/>
