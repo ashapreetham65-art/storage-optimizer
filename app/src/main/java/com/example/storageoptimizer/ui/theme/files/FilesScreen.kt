@@ -169,10 +169,6 @@ fun FilesScreen(
         }
     }
 
-    LaunchedEffect(Unit) {
-        if (files.isEmpty() && !isScanningFiles) requestPermissionAndScan()
-    }
-
     // ── Sorted lists ──────────────────────────────────────────────────────────
     val sortedFiles = remember(files, sortOrder, sortDirection) {
         val ascending = sortDirection == SortDirection.ASCENDING

@@ -91,23 +91,6 @@ fun HomeScreen(
         )
     }
 
-    // Auto-scan files silently on every app open if permission already granted.
-    // Files are not persisted to DB so we re-scan from MediaStore each launch —
-    // it's fast (no hashing) and avoids showing "Scan first" after a restart.
-    LaunchedEffect(Unit) {
-        val alreadyHasAccess =
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
-                android.os.Environment.isExternalStorageManager()
-            else
-                ContextCompat.checkSelfPermission(
-                    context, Manifest.permission.READ_EXTERNAL_STORAGE
-                ) == PackageManager.PERMISSION_GRANTED
-
-        if (alreadyHasAccess && files.isEmpty() && !isScanningFiles) {
-            viewModel.scanFiles(context.contentResolver)
-        }
-    }
-
     val requiredImagePermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
         Manifest.permission.READ_MEDIA_IMAGES
     else
@@ -268,7 +251,6 @@ fun HomeScreen(
                 isScanning         = isScanningFiles,
                 hasData            = files.isNotEmpty(),
                 onReviewClick      = onFilesReviewClick,
-                onScanClick        = { scanFilesWithPermission() }
             )
         }
     }
@@ -505,7 +487,6 @@ private fun FilesCard(
     isScanning:         Boolean,
     hasData:            Boolean,
     onReviewClick:      () -> Unit,
-    onScanClick:        () -> Unit
 ) {
     val filePurple = Color(0xFF9C6FE4)
     val fileBlue   = Color(0xFF4FC3F7)
@@ -573,7 +554,7 @@ private fun FilesCard(
                         if (duplicateFileCount > 0) append(" • $duplicateFileCount duplicates found")
                         else append(" • No duplicates found")
                     }
-                    else       -> "Tap Review to scan your files"
+                    else -> "Tap Scan Storage to analyse your files"
                 }
                 Text(text = statsText, color = TextSecondary, fontSize = 13.sp)
 
@@ -601,8 +582,8 @@ private fun FilesCard(
                     horizontalArrangement = Arrangement.End
                 ) {
                     Button(
-                        onClick        = if (hasData) onReviewClick else onScanClick,
-                        enabled        = !isScanning,
+                        onClick        = onReviewClick,
+                        enabled        = hasData && !isScanning,
                         shape          = RoundedCornerShape(14.dp),
                         colors         = ButtonDefaults.buttonColors(
                             containerColor         = ReviewButton,
@@ -626,7 +607,7 @@ private fun FilesCard(
                         } else {
                             Text(
                                 text       = if (hasData) "Review" else "Scan first",
-                                color      = TextPrimary,
+                                color = if (hasData) TextPrimary else TextPrimary.copy(alpha = 0.4f),
                                 fontSize   = 15.sp,
                                 fontWeight = FontWeight.SemiBold
                             )
