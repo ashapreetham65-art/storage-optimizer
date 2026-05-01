@@ -10,5 +10,6 @@ data class FileItem(
     val mimeType:     String,
     val dateModified: Long,   // seconds since epoch
     val dateAdded:    Long,   // seconds since epoch
-    val path:         String  // for display purposes
+    val path:         String, // for display purposes
+    val hash:         Long?  = null  // chunk-hash for duplicate detection
 )

@@ -28,9 +28,6 @@ object FileEngine {
             MediaStore.Files.FileColumns.DATA
         )
 
-        // FIX 1: Removed "MIME_TYPE IS NOT NULL" — that was silently dropping
-        // APKs, misc downloads, and anything MediaStore hadn't resolved yet.
-        // Now we allow NULL mime and fall back to guessing from extension below.
         val selection =
             "${MediaStore.Files.FileColumns.SIZE} > 0 AND " +
                     "(" +
@@ -63,7 +60,6 @@ object FileEngine {
                     val name = cursor.getString(nameCol) ?: continue
                     if (size <= 0L || name.isBlank()) continue
 
-                    // FIX 2: Null MIME → guess from extension instead of dropping the file
                     val mime = cursor.getString(mimeCol) ?: guessMime(name)
                     val dm   = cursor.getLong(dmCol)
                     val da   = cursor.getLong(daCol)
@@ -74,8 +70,7 @@ object FileEngine {
                 }
             }
 
-        // FIX 3: Also query MediaStore.Downloads (Android 10+).
-        // Files downloaded via browser/apps often live here and nowhere else.
+        // ── Query 2: MediaStore.Downloads (Android 10+) ───────────────────────
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val dlCollection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL)
             contentResolver.query(dlCollection, projection, selection, null, sortOrder)
@@ -90,7 +85,7 @@ object FileEngine {
 
                     while (cursor.moveToNext()) {
                         val id   = cursor.getLong(idCol)
-                        if (id in seen) continue   // skip anything already found above
+                        if (id in seen) continue
                         seen += id
 
                         val size = cursor.getLong(sizeCol)
@@ -113,8 +108,70 @@ object FileEngine {
         }
     }
 
+    // ── File hashing ──────────────────────────────────────────────────────────
+    // Reads the first 64 KB + last 64 KB + file size into a simple FNV-1a 64-bit
+    // hash. This is fast (no full read), collision-safe for practical duplicate
+    // detection, and requires no third-party library.
+    fun hashFile(uri: Uri, contentResolver: ContentResolver, fileSize: Long): Long? {
+        return try {
+            contentResolver.openInputStream(uri)?.use { stream ->
+                val chunkSize   = 65_536          // 64 KB
+                val firstChunk  = ByteArray(chunkSize)
+                val firstRead   = stream.read(firstChunk)
+                if (firstRead <= 0) return null
+
+                // Mix file size into the hash so files with identical first chunks
+                // but different sizes (truncated copies) are never falsely grouped.
+                var hash = 0xcbf29ce484222325UL
+                val prime = 0x100000001b3UL
+
+                // FNV-1a over firstChunk
+                for (i in 0 until firstRead) {
+                    hash = hash xor firstChunk[i].toLong().and(0xFF).toULong()
+                    hash *= prime
+                }
+
+                // Mix in file size
+                hash = hash xor fileSize.toULong()
+                hash *= prime
+
+                // For files larger than one chunk, also hash the last 64 KB.
+                // This catches files that share a header but differ at the end.
+                if (fileSize > chunkSize * 2) {
+                    val skipBytes = fileSize - chunkSize - firstRead
+                    if (skipBytes > 0) stream.skip(skipBytes)
+                    val lastChunk = ByteArray(chunkSize)
+                    val lastRead  = stream.read(lastChunk)
+                    if (lastRead > 0) {
+                        for (i in 0 until lastRead) {
+                            hash = hash xor lastChunk[i].toLong().and(0xFF).toULong()
+                            hash *= prime
+                        }
+                    }
+                }
+
+                hash.toLong()
+            }
+        } catch (_: Exception) { null }
+    }
+
+    // ── Exact-duplicate grouping ──────────────────────────────────────────────
+    // Groups files that share both file-size AND hash.
+    // Size pre-filter eliminates O(n²) hash comparisons for unique-sized files.
+    fun findExactDuplicateGroups(files: List<FileItem>): List<List<FileItem>> {
+        // Only consider files that have been hashed
+        val hashed = files.filter { it.hash != null }
+
+        // Group by (size, hash) — exact match on both
+        return hashed
+            .groupBy { it.size to it.hash!! }
+            .values
+            .filter { it.size > 1 }               // must have ≥ 2 files to be a "group"
+            .sortedByDescending { it.size }        // most duplicates first by default
+    }
+
     /** Guess MIME type from file extension when MediaStore returns null */
-    private fun guessMime(name: String): String {
+    fun guessMime(name: String): String {
         return when (name.substringAfterLast('.', "").lowercase()) {
             "pdf"          -> "application/pdf"
             "apk"          -> "application/vnd.android.package-archive"

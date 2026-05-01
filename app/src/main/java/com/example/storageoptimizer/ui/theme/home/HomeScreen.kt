@@ -70,6 +70,7 @@ fun HomeScreen(
     val lastScannedAt   by viewModel.lastScannedAt.collectAsState()
     val files           by viewModel.files.collectAsState()
     val isScanningFiles by viewModel.isScanningFiles.collectAsState()
+    val fileDuplicateGroups by viewModel.fileDuplicateGroups.collectAsState()
 
     val storageStat  = remember { StatFs(Environment.getDataDirectory().path) }
     val totalBytes   = storageStat.totalBytes
@@ -261,12 +262,13 @@ fun HomeScreen(
 
             // ── Files card
             FilesCard(
-                fileCount       = files.size,
-                totalFileSize   = files.sumOf { it.size },
-                isScanning      = isScanningFiles,
-                hasData         = files.isNotEmpty(),
-                onReviewClick   = onFilesReviewClick,
-                onScanClick     = { scanFilesWithPermission() }
+                fileCount          = files.size,
+                totalFileSize      = files.sumOf { it.size },
+                duplicateFileCount = fileDuplicateGroups.sumOf { it.size - 1 },
+                isScanning         = isScanningFiles,
+                hasData            = files.isNotEmpty(),
+                onReviewClick      = onFilesReviewClick,
+                onScanClick        = { scanFilesWithPermission() }
             )
         }
     }
@@ -497,12 +499,13 @@ private fun ImagesCard(
 // ── Files summary card ────────────────────────────────────────────────────────
 @Composable
 private fun FilesCard(
-    fileCount:     Int,
-    totalFileSize: Long,
-    isScanning:    Boolean,
-    hasData:       Boolean,
-    onReviewClick: () -> Unit,
-    onScanClick:   () -> Unit
+    fileCount:          Int,
+    totalFileSize:      Long,
+    duplicateFileCount: Int,
+    isScanning:         Boolean,
+    hasData:            Boolean,
+    onReviewClick:      () -> Unit,
+    onScanClick:        () -> Unit
 ) {
     val filePurple = Color(0xFF9C6FE4)
     val fileBlue   = Color(0xFF4FC3F7)
@@ -567,7 +570,8 @@ private fun FilesCard(
                     isScanning -> "Scanning files..."
                     hasData    -> buildString {
                         append("$fileCount files found")
-                        if (totalFileSize > 0L) append(" • ${formatBytes(totalFileSize)} used")
+                        if (duplicateFileCount > 0) append(" • $duplicateFileCount duplicates found")
+                        else append(" • No duplicates found")
                     }
                     else       -> "Tap Review to scan your files"
                 }

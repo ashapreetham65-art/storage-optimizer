@@ -30,7 +30,8 @@ class MainViewModel(
         private const val KEY_LAST_SCANNED = "last_scanned_at_ms"
     }
 
-    private val hashSemaphore = Semaphore(4)
+    private val hashSemaphore     = Semaphore(4)
+    private val fileHashSemaphore = Semaphore(4)
 
     // ── Image StateFlows ─────────────────────────────────────────────────────
 
@@ -61,6 +62,14 @@ class MainViewModel(
 
     private val _isScanningFiles = MutableStateFlow(false)
     val isScanningFiles: StateFlow<Boolean> = _isScanningFiles.asStateFlow()
+
+    /** True while file hashing is in progress (after initial load completes) */
+    private val _isHashingFiles  = MutableStateFlow(false)
+    val isHashingFiles: StateFlow<Boolean> = _isHashingFiles.asStateFlow()
+
+    /** Exact-duplicate file groups — non-empty only after hashing completes */
+    private val _fileDuplicateGroups = MutableStateFlow<List<List<FileItem>>>(emptyList())
+    val fileDuplicateGroups: StateFlow<List<List<FileItem>>> = _fileDuplicateGroups.asStateFlow()
 
     // ── Init ─────────────────────────────────────────────────────────────────
 
@@ -107,21 +116,113 @@ class MainViewModel(
     val fileCount: Int
         get() = _files.value.size
 
-    // ── File scanning ────────────────────────────────────────────────────────
+    // ── File scanning ─────────────────────────────────────────────────────────
+    // Phase 1: load file metadata from MediaStore (fast).
+    // Phase 2: hash every file to detect exact duplicates (slow, background).
 
     fun scanFiles(contentResolver: ContentResolver) {
         if (_isScanningFiles.value) return
         viewModelScope.launch {
-            _isScanningFiles.value = true
-            val scanned = withContext(Dispatchers.IO) {
+            _isScanningFiles.value    = true
+            _fileDuplicateGroups.value = emptyList()
+
+            // Phase 1 — metadata only (fast)
+            val unhashedFiles = withContext(Dispatchers.IO) {
                 FileEngine.loadFiles(contentResolver)
             }
-            _files.value           = scanned
+            _files.value           = unhashedFiles
             _isScanningFiles.value = false
+
+            // Phase 2 — hash every file to find duplicates (slow, but non-blocking)
+            hashFilesAndFindDuplicates(unhashedFiles, contentResolver)
         }
     }
 
-    // ── Full scan (first time / HomeScreen "Scan Storage") ───────────────────
+    private fun hashFilesAndFindDuplicates(
+        files: List<FileItem>,
+        contentResolver: ContentResolver
+    ) {
+        viewModelScope.launch {
+            _isHashingFiles.value = true
+
+            val hashedFiles = withContext(Dispatchers.IO) {
+                coroutineScope {
+                    files.map { file ->
+                        async {
+                            fileHashSemaphore.withPermit {
+                                val hash = FileEngine.hashFile(file.uri, contentResolver, file.size)
+                                file.copy(hash = hash)
+                            }
+                        }
+                    }.awaitAll()
+                }
+            }
+
+            // Update file list with hashes (allows UI to show sizes etc. correctly)
+            _files.value = hashedFiles
+
+            // Derive duplicate groups
+            val groups = withContext(Dispatchers.IO) {
+                FileEngine.findExactDuplicateGroups(hashedFiles)
+            }
+            _fileDuplicateGroups.value = groups
+            _isHashingFiles.value      = false
+        }
+    }
+
+    // ── Auto-select duplicates (keep largest, mark rest for deletion) ─────────
+    fun autoSelectedFileDuplicateIds(): Set<Long> =
+        _fileDuplicateGroups.value.flatMap { group ->
+            group.sortedByDescending { it.size }.drop(1)
+        }.map { it.id }.toSet()
+
+    // ── File deletion ─────────────────────────────────────────────────────────
+    // Removes deleted IDs from both _files and _fileDuplicateGroups in memory,
+    // then deletes from MediaStore via the ContentResolver.
+    fun deleteFiles(
+        toDelete: Set<Long>,
+        contentResolver: ContentResolver,
+        onComplete: () -> Unit
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            toDelete.forEach { id ->
+                try {
+                    contentResolver.delete(
+                        ContentUris.withAppendedId(
+                            MediaStore.Files.getContentUri("external"), id
+                        ), null, null
+                    )
+                } catch (_: Exception) { /* file may already be gone */ }
+            }
+
+            // Also try the Downloads URI (Android 10+) in case the file lives there
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                toDelete.forEach { id ->
+                    try {
+                        contentResolver.delete(
+                            ContentUris.withAppendedId(
+                                MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL), id
+                            ), null, null
+                        )
+                    } catch (_: Exception) { }
+                }
+            }
+
+            withContext(Dispatchers.Main) {
+                // Remove from flat list
+                _files.value = _files.value.filter { it.id !in toDelete }
+
+                // Remove from duplicate groups; drop groups that collapse to < 2 items
+                _fileDuplicateGroups.value = _fileDuplicateGroups.value
+                    .map { group -> group.filter { it.id !in toDelete } }
+                    .filter { it.size > 1 }
+
+                onComplete()
+            }
+        }
+    }
+
+    // ── Image scanning ───────────────────────────────────────────────────────
 
     fun scan(contentResolver: ContentResolver) {
         if (_isScanning.value) return
@@ -157,8 +258,6 @@ class MainViewModel(
             _isScanning.value    = false
         }
     }
-
-    // ── Incremental refresh ──────────────────────────────────────────────────
 
     fun refresh(contentResolver: ContentResolver) {
         if (_isScanning.value) return
@@ -233,8 +332,6 @@ class MainViewModel(
         }
     }
 
-    // ── Hashing helper ───────────────────────────────────────────────────────
-
     private suspend fun hashImages(
         items: List<ImageItem>,
         contentResolver: ContentResolver
@@ -252,7 +349,7 @@ class MainViewModel(
         }
     }
 
-    // ── Deletion ─────────────────────────────────────────────────────────────
+    // ── Image deletion ───────────────────────────────────────────────────────
 
     fun onDeleteConfirmed(deletedIds: Set<Long>) {
         viewModelScope.launch {
