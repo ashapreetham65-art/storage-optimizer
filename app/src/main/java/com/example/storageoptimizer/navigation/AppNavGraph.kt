@@ -34,8 +34,9 @@ fun AppNavGraph(navController: NavHostController) {
         context.getSharedPreferences("storage_optimizer_prefs", Context.MODE_PRIVATE)
     }
 
+    val fileDao = remember(db) { db.fileDao() }
     val viewModel: MainViewModel = viewModel(
-        factory = MainViewModel.Factory(repository, prefs)
+        factory = MainViewModel.Factory(repository, fileDao, prefs)
     )
 
     NavHost(

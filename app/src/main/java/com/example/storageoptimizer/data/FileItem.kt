@@ -8,8 +8,8 @@ data class FileItem(
     val name:         String,
     val size:         Long,
     val mimeType:     String,
-    val dateModified: Long,   // seconds since epoch
-    val dateAdded:    Long,   // seconds since epoch
-    val path:         String, // for display purposes
-    val hash:         Long?  = null  // chunk-hash for duplicate detection
+    val dateModified: Long,
+    val dateAdded:    Long,
+    val path:         String,
+    val hash:         Long? = null   // FNV-1a 64-bit hash — must match FileEntity.hash type
 )

@@ -9,6 +9,8 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.storageoptimizer.engine.FileEngine
 import com.example.storageoptimizer.engine.ImageEngine
+import com.example.storageoptimizer.data.local.FileDao
+import com.example.storageoptimizer.data.local.FileEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -23,6 +25,7 @@ import kotlinx.coroutines.withContext
 
 class MainViewModel(
     private val repository: ImageRepository,
+    private val fileDao:    FileDao,
     private val prefs:      SharedPreferences
 ) : ViewModel() {
 
@@ -31,7 +34,6 @@ class MainViewModel(
     }
 
     private val hashSemaphore     = Semaphore(4)
-    private val fileHashSemaphore = Semaphore(4)
 
     // ── Image StateFlows ─────────────────────────────────────────────────────
 
@@ -73,7 +75,34 @@ class MainViewModel(
 
     // ── Init ─────────────────────────────────────────────────────────────────
 
-    init { loadFromDb() }
+    init {
+        loadFromDb()
+        loadFilesFromDb()
+    }
+
+    private fun FileEntity.toFileItem() = FileItem(
+        id           = id,
+        uri          = android.net.Uri.parse(uri),
+        name         = name,
+        size         = size,
+        mimeType     = mimeType,
+        dateModified = dateModified,
+        dateAdded    = dateAdded,
+        path         = path,
+        hash         = hash
+    )
+
+    private fun FileItem.toFileEntity() = FileEntity(
+        id           = id,
+        uri          = uri.toString(),
+        name         = name,
+        size         = size,
+        mimeType     = mimeType,
+        dateModified = dateModified,
+        dateAdded    = dateAdded,
+        path         = path,
+        hash         = hash
+    )
 
     private fun loadFromDb() {
         viewModelScope.launch {
@@ -120,53 +149,88 @@ class MainViewModel(
     // Phase 1: load file metadata from MediaStore (fast).
     // Phase 2: hash every file to detect exact duplicates (slow, background).
 
-    fun scanFiles(contentResolver: ContentResolver) {
-        if (_isScanningFiles.value) return
+    // ── File scanning — incremental, mirrors image scanning ───────────────────
+
+    private fun loadFilesFromDb() {
         viewModelScope.launch {
-            _isScanningFiles.value    = true
-            _fileDuplicateGroups.value = emptyList()
-
-            // Phase 1 — metadata only (fast)
-            val unhashedFiles = withContext(Dispatchers.IO) {
-                FileEngine.loadFiles(contentResolver)
+            val saved = withContext(Dispatchers.IO) {
+                fileDao.getAllFiles().map { it.toFileItem() }
             }
-            _files.value           = unhashedFiles
-            _isScanningFiles.value = false
-
-            // Phase 2 — hash every file to find duplicates (slow, but non-blocking)
-            hashFilesAndFindDuplicates(unhashedFiles, contentResolver)
+            if (saved.isNotEmpty()) {
+                _files.value              = saved
+                _fileDuplicateGroups.value = FileEngine.findDuplicateGroups(saved)
+            }
         }
     }
 
-    private fun hashFilesAndFindDuplicates(
-        files: List<FileItem>,
-        contentResolver: ContentResolver
-    ) {
+    fun scanFiles(contentResolver: ContentResolver) {
+        if (_isScanningFiles.value) return
         viewModelScope.launch {
-            _isHashingFiles.value = true
+            _isScanningFiles.value = true
 
-            val hashedFiles = withContext(Dispatchers.IO) {
-                coroutineScope {
-                    files.map { file ->
-                        async {
-                            fileHashSemaphore.withPermit {
-                                val hash = FileEngine.hashFile(file.uri, contentResolver, file.size)
-                                file.copy(hash = hash)
+            // Step 1 — load fresh file list from MediaStore (no hashing yet)
+            val currentFromDevice = withContext(Dispatchers.IO) {
+                FileEngine.loadFiles(contentResolver)
+            }
+
+            // Step 2 — diff against what's in DB
+            val dbFiles    = fileDao.getAllFiles().map { it.toFileItem() }
+            val dbMap      = dbFiles.associateBy { it.id }
+            val currentMap = currentFromDevice.associateBy { it.id }
+
+            val newIds      = currentMap.keys - dbMap.keys
+            val deletedIds  = dbMap.keys - currentMap.keys
+            val modifiedIds = currentMap.keys
+                .intersect(dbMap.keys)
+                .filter { id ->
+                    val current = currentMap.getValue(id)
+                    val stored  = dbMap.getValue(id)
+                    current.size != stored.size || current.dateModified != stored.dateModified
+                }.toSet()
+
+            val toHashIds = newIds + modifiedIds
+
+            // Step 3 — only hash new/modified files, reuse existing hashes
+            val rehashed = if (toHashIds.isNotEmpty()) {
+                _isHashingFiles.value = true
+                val toHashItems = toHashIds.map { currentMap.getValue(it) }
+                val result = withContext(Dispatchers.IO) {
+                    coroutineScope {
+                        toHashItems.map { file ->
+                            async {
+                                hashSemaphore.withPermit {
+                                    file.copy(
+                                        hash = FileEngine.calculateHash(file.uri, contentResolver)
+                                    )
+                                }
                             }
-                        }
-                    }.awaitAll()
+                        }.awaitAll()
+                    }
                 }
+                _isHashingFiles.value = false
+                result
+            } else emptyList()
+
+            // Step 4 — build final list: kept unchanged + rehashed
+            val rehashedMap  = rehashed.associateBy { it.id }
+            val finalFiles   = (dbFiles
+                .filter { it.id !in deletedIds && it.id !in modifiedIds }
+                    + rehashedMap.values
+                    + newIds
+                .filter { it !in rehashedMap }
+                .mapNotNull { currentMap[it] })
+                .sortedByDescending { if (it.dateAdded > 0L) it.dateAdded else it.dateModified }
+
+            // Step 5 — persist to DB
+            withContext(Dispatchers.IO) {
+                if (deletedIds.isNotEmpty()) fileDao.deleteByIds(deletedIds.toList())
+                if (rehashed.isNotEmpty())   fileDao.upsert(rehashed.map { it.toFileEntity() })
+                // Also upsert any brand new files that had no hash (shouldn't happen but safety)
             }
 
-            // Update file list with hashes (allows UI to show sizes etc. correctly)
-            _files.value = hashedFiles
-
-            // Derive duplicate groups
-            val groups = withContext(Dispatchers.IO) {
-                FileEngine.findExactDuplicateGroups(hashedFiles)
-            }
-            _fileDuplicateGroups.value = groups
-            _isHashingFiles.value      = false
+            _files.value               = finalFiles
+            _fileDuplicateGroups.value = FileEngine.findDuplicateGroups(finalFiles)
+            _isScanningFiles.value     = false
         }
     }
 
@@ -393,10 +457,11 @@ class MainViewModel(
 
     class Factory(
         private val repository: ImageRepository,
+        private val fileDao:    FileDao,
         private val prefs:      SharedPreferences
     ) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T =
-            MainViewModel(repository, prefs) as T
+            MainViewModel(repository, fileDao, prefs) as T
     }
 }

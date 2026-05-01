@@ -109,38 +109,38 @@ object FileEngine {
     }
 
     // ── File hashing ──────────────────────────────────────────────────────────
-    // Reads the first 64 KB + last 64 KB + file size into a simple FNV-1a 64-bit
-    // hash. This is fast (no full read), collision-safe for practical duplicate
-    // detection, and requires no third-party library.
-    fun hashFile(uri: Uri, contentResolver: ContentResolver, fileSize: Long): Long? {
+    // Named calculateHash so MainViewModel can call FileEngine.calculateHash().
+    // Reads first 64 KB + last 64 KB + mixes in file size — fast FNV-1a 64-bit.
+    fun calculateHash(uri: Uri, contentResolver: ContentResolver): Long? {
         return try {
+            val fileSize = contentResolver.openFileDescriptor(uri, "r")?.use {
+                it.statSize
+            } ?: return null
+
             contentResolver.openInputStream(uri)?.use { stream ->
-                val chunkSize   = 65_536          // 64 KB
-                val firstChunk  = ByteArray(chunkSize)
-                val firstRead   = stream.read(firstChunk)
+                val chunkSize  = 65_536L
+                val firstChunk = ByteArray(chunkSize.toInt())
+                val firstRead  = stream.read(firstChunk)
                 if (firstRead <= 0) return null
 
-                // Mix file size into the hash so files with identical first chunks
-                // but different sizes (truncated copies) are never falsely grouped.
-                var hash = 0xcbf29ce484222325UL
+                var hash  = 0xcbf29ce484222325UL
                 val prime = 0x100000001b3UL
 
-                // FNV-1a over firstChunk
+                // FNV-1a over first chunk
                 for (i in 0 until firstRead) {
                     hash = hash xor firstChunk[i].toLong().and(0xFF).toULong()
                     hash *= prime
                 }
 
-                // Mix in file size
+                // Mix in file size so truncated copies never collide
                 hash = hash xor fileSize.toULong()
                 hash *= prime
 
-                // For files larger than one chunk, also hash the last 64 KB.
-                // This catches files that share a header but differ at the end.
+                // Also hash last 64 KB for large files
                 if (fileSize > chunkSize * 2) {
                     val skipBytes = fileSize - chunkSize - firstRead
                     if (skipBytes > 0) stream.skip(skipBytes)
-                    val lastChunk = ByteArray(chunkSize)
+                    val lastChunk = ByteArray(chunkSize.toInt())
                     val lastRead  = stream.read(lastChunk)
                     if (lastRead > 0) {
                         for (i in 0 until lastRead) {
@@ -155,22 +155,18 @@ object FileEngine {
         } catch (_: Exception) { null }
     }
 
-    // ── Exact-duplicate grouping ──────────────────────────────────────────────
-    // Groups files that share both file-size AND hash.
-    // Size pre-filter eliminates O(n²) hash comparisons for unique-sized files.
-    fun findExactDuplicateGroups(files: List<FileItem>): List<List<FileItem>> {
-        // Only consider files that have been hashed
-        val hashed = files.filter { it.hash != null }
-
-        // Group by (size, hash) — exact match on both
-        return hashed
+    // ── Duplicate grouping ────────────────────────────────────────────────────
+    // Named findDuplicateGroups so MainViewModel can call FileEngine.findDuplicateGroups().
+    // Groups files sharing both size AND hash — exact duplicates only.
+    fun findDuplicateGroups(files: List<FileItem>): List<List<FileItem>> {
+        return files
+            .filter { it.hash != null }
             .groupBy { it.size to it.hash!! }
             .values
-            .filter { it.size > 1 }               // must have ≥ 2 files to be a "group"
-            .sortedByDescending { it.size }        // most duplicates first by default
+            .filter { it.size > 1 }
+            .sortedByDescending { it.size }
     }
 
-    /** Guess MIME type from file extension when MediaStore returns null */
     fun guessMime(name: String): String {
         return when (name.substringAfterLast('.', "").lowercase()) {
             "pdf"          -> "application/pdf"
@@ -197,21 +193,21 @@ object FileEngine {
         }
     }
 
-    /** Groups files into broad categories by MIME type */
     fun categorize(files: List<FileItem>): Map<String, List<FileItem>> {
         return files.groupBy { file ->
             when {
-                file.mimeType == "application/vnd.android.package-archive"   -> "APKs"
+                file.mimeType == "application/vnd.android.package-archive"        -> "APKs"
                 file.mimeType.contains("zip") || file.mimeType.contains("rar") ||
                         file.mimeType.contains("tar") || file.mimeType.contains("7z") ||
-                        file.mimeType.contains("compress")                            -> "Archives"
-                file.mimeType.contains("pdf")                                 -> "PDFs"
+                        file.mimeType.contains("compress")                                 -> "Archives"
+                file.mimeType.contains("pdf")                                      -> "PDFs"
                 file.mimeType.contains("word") || file.mimeType.contains("document") ||
-                        file.mimeType == "text/plain"                                 -> "Documents"
+                        file.mimeType == "text/plain"                                      -> "Documents"
                 file.mimeType.contains("sheet") || file.mimeType.contains("excel") ||
-                        file.mimeType.contains("csv")                                 -> "Spreadsheets"
-                file.mimeType.contains("presentation") || file.mimeType.contains("powerpoint") -> "Presentations"
-                else                                                          -> "Other"
+                        file.mimeType.contains("csv")                                      -> "Spreadsheets"
+                file.mimeType.contains("presentation") ||
+                        file.mimeType.contains("powerpoint")                               -> "Presentations"
+                else                                                               -> "Other"
             }
         }
     }
