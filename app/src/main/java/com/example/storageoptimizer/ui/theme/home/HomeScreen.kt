@@ -38,6 +38,8 @@ import androidx.core.content.ContextCompat
 import coil.compose.AsyncImage
 import com.example.storageoptimizer.data.MainViewModel
 import kotlin.math.min
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 
 // Colours
 private val BackgroundTop    = Color(0xFF0F1422)
@@ -73,6 +75,7 @@ fun HomeScreen(
     val fileDuplicateGroups by viewModel.fileDuplicateGroups.collectAsState()
 
     val storageStat  = remember { StatFs(Environment.getDataDirectory().path) }
+    val scope        = rememberCoroutineScope()
     val totalBytes   = storageStat.totalBytes
     val freeBytes    = storageStat.availableBytes
     val usedBytes    = totalBytes - freeBytes
@@ -144,10 +147,11 @@ fun HomeScreen(
         }
     }
 
+    val imageGranted = ContextCompat.checkSelfPermission(
+        context, requiredImagePermission
+    ) == PackageManager.PERMISSION_GRANTED
+
     fun handleScanClick() {
-        val imageGranted = ContextCompat.checkSelfPermission(
-            context, requiredImagePermission
-        ) == PackageManager.PERMISSION_GRANTED
 
         if (imageGranted) {
             if (viewModel.hasData()) viewModel.refresh(context.contentResolver)
@@ -185,13 +189,13 @@ fun HomeScreen(
 
             Button(
                 onClick = { handleScanClick() },
-                enabled = !isScanning && !isLoadingFromDb,
+                enabled = !isScanning && !isScanningFiles && !isLoadingFromDb,
                 shape   = RoundedCornerShape(16.dp),
                 colors  = ButtonDefaults.buttonColors(containerColor = ButtonBackground),
                 contentPadding = PaddingValues(horizontal = 48.dp, vertical = 16.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                if (isScanning) {
+                if (isScanning || isScanningFiles) {
                     CircularProgressIndicator(
                         modifier    = Modifier.size(18.dp),
                         strokeWidth = 2.dp,
@@ -220,7 +224,7 @@ fun HomeScreen(
             Text(
                 text = when {
                     isLoadingFromDb   -> "Loading saved data..."
-                    isScanning        -> "Scanning your storage..."
+                    isScanning || isScanningFiles -> "Scanning your storage..."
                     scannedAt != null -> "Last scanned ${timeAgo(scannedAt)}"
                     imageCount > 0    -> "Data loaded — tap Scan Storage to refresh"
                     else              -> "Tap Scan Storage to get started"
@@ -238,7 +242,14 @@ fun HomeScreen(
                 reclaimableBytes = reclaimableBytes,
                 previewImages    = previewImages,
                 hasData          = viewModel.hasData(),
-                onReviewClick    = onReviewClick
+                isScanning       = isScanning,
+                onReviewClick = {
+                    onReviewClick()
+                    scope.launch {
+                        delay(350)
+                        if (imageGranted) viewModel.refresh(context.contentResolver)
+                    }
+                }
             )
 
             Spacer(modifier = Modifier.height(16.dp))
@@ -250,7 +261,13 @@ fun HomeScreen(
                 duplicateFileCount = fileDuplicateGroups.sumOf { it.size - 1 },
                 isScanning         = isScanningFiles,
                 hasData            = files.isNotEmpty(),
-                onReviewClick      = onFilesReviewClick,
+                onReviewClick = {
+                    onFilesReviewClick()
+                    scope.launch {
+                        delay(350)
+                        scanFilesWithPermission()
+                    }
+                }
             )
         }
     }
@@ -367,6 +384,7 @@ private fun ImagesCard(
     reclaimableBytes: Long,
     previewImages:    List<com.example.storageoptimizer.data.ImageItem>,
     hasData:          Boolean,
+    isScanning:       Boolean,
     onReviewClick:    () -> Unit
 ) {
     Box(
@@ -418,30 +436,42 @@ private fun ImagesCard(
                 Spacer(modifier = Modifier.height(10.dp))
 
                 val statsText = buildString {
-                    if (imageCount > 0) {
-                        append("$imageCount photos")
-                        if (duplicateCount > 0) append(" • $duplicateCount duplicates")
-                        if (reclaimableBytes > 0L)
-                            append(" • Can free ${formatBytes(reclaimableBytes)}")
-                    } else {
-                        append("Tap Scan Storage to analyse your images")
+                    when {
+                        isScanning && imageCount == 0 -> append("Scanning your images...")
+                        imageCount > 0 -> {
+                            append("$imageCount photos")
+                            if (duplicateCount > 0) append(" • $duplicateCount duplicates")
+                            if (reclaimableBytes > 0L)
+                                append(" • Can free ${formatBytes(reclaimableBytes)}")
+                        }
+                        else -> append("Tap Scan Storage to analyse your images")
                     }
                 }
                 Text(text = statsText, color = TextSecondary, fontSize = 13.sp)
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                if (previewImages.isNotEmpty()) {
+                if (isScanning) {
+                    LinearProgressIndicator(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(3.dp)
+                            .clip(RoundedCornerShape(2.dp)),
+                        color = BarStart,
+                        trackColor = Color(0xFF2A2F4A)
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                } else if (previewImages.isNotEmpty()) {
                     Row(
-                        modifier              = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         previewImages.forEach { image ->
                             AsyncImage(
-                                model              = image.uri,
+                                model = image.uri,
                                 contentDescription = null,
-                                contentScale       = ContentScale.Crop,
-                                modifier           = Modifier
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
                                     .weight(1f)
                                     .aspectRatio(1f)
                                     .clip(RoundedCornerShape(12.dp))
@@ -459,18 +489,33 @@ private fun ImagesCard(
                     horizontalArrangement = Arrangement.End
                 ) {
                     Button(
-                        onClick        = onReviewClick,
-                        enabled        = hasData,
-                        shape          = RoundedCornerShape(14.dp),
-                        colors         = ButtonDefaults.buttonColors(containerColor = ReviewButton),
+                        onClick = onReviewClick,
+                        enabled = hasData && !isScanning,
+                        shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = ReviewButton),
                         contentPadding = PaddingValues(horizontal = 28.dp, vertical = 12.dp)
                     ) {
-                        Text(
-                            text       = if (hasData) "Review" else "Scan first",
-                            color      = TextPrimary,
-                            fontSize   = 15.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
+                        if (isScanning) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(14.dp),
+                                strokeWidth = 2.dp,
+                                color = TextPrimary
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Scanning...",
+                                color = TextPrimary,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        } else {
+                            Text(
+                                text = if (hasData) "Review" else "Scan first",
+                                color = TextPrimary,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
                     }
                 }
             }
@@ -548,7 +593,7 @@ private fun FilesCard(
 
                 // Stats text
                 val statsText = when {
-                    isScanning -> "Scanning files..."
+                    isScanning -> "Scanning your files..."
                     hasData    -> buildString {
                         append("$fileCount files found")
                         if (duplicateFileCount > 0) append(" • $duplicateFileCount duplicates found")
@@ -585,10 +630,7 @@ private fun FilesCard(
                         onClick        = onReviewClick,
                         enabled        = hasData && !isScanning,
                         shape          = RoundedCornerShape(14.dp),
-                        colors         = ButtonDefaults.buttonColors(
-                            containerColor         = ReviewButton,
-                            disabledContainerColor = ReviewButton.copy(alpha = 0.5f)
-                        ),
+                        colors         = ButtonDefaults.buttonColors(containerColor = ReviewButton),
                         contentPadding = PaddingValues(horizontal = 28.dp, vertical = 12.dp)
                     ) {
                         if (isScanning) {
@@ -607,7 +649,7 @@ private fun FilesCard(
                         } else {
                             Text(
                                 text       = if (hasData) "Review" else "Scan first",
-                                color = if (hasData) TextPrimary else TextPrimary.copy(alpha = 0.4f),
+                                color      = TextPrimary ,
                                 fontSize   = 15.sp,
                                 fontWeight = FontWeight.SemiBold
                             )
