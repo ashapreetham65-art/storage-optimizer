@@ -87,8 +87,6 @@ private val SubText      = Color(0xFF8A90A8)
 private val HeaderText   = Color(0xFFEEF0F8)
 private val CountPillBg  = Color(0xFF1E2A4A)
 private val IconBg       = Color(0xFF252D4A)
-private val TileBorder1  = Color(0x55FFFFFF)
-private val TileBorder2  = Color(0x15FFFFFF)
 private val OverlayDim   = Color(0x88000000)
 
 // ── Tabs ──────────────────────────────────────────────────────────────────────
@@ -119,20 +117,17 @@ fun FilesScreen(
     val isHashingFiles   by viewModel.isHashingFiles.collectAsState()
     val dupGroups        by viewModel.fileDuplicateGroups.collectAsState()
 
-    var activeTab               by remember { mutableStateOf(FileTab.ALL_FILES) }
-    var sortOrder               by remember { mutableStateOf(FileSortOrder.TYPE) }
-    var sortDirection           by remember { mutableStateOf(SortDirection.DESCENDING) }
-    var dupSortOrder            by remember { mutableStateOf(FileDupSortOrder.MOST_DUPLICATES) }
-    var dupSelectedIds          by remember { mutableStateOf(setOf<Long>()) }
-    var isDeletingFiles         by remember { mutableStateOf(false) }
-    var showDeleteDialog        by remember { mutableStateOf(false) }
-
-    // All Files tab selection state
-    var allFilesSelectedIds     by remember { mutableStateOf(setOf<Long>()) }
-    var isDeletingAllFiles      by remember { mutableStateOf(false) }
+    var activeTab                by remember { mutableStateOf(FileTab.ALL_FILES) }
+    var sortOrder                by remember { mutableStateOf(FileSortOrder.TYPE) }
+    var sortDirection            by remember { mutableStateOf(SortDirection.ASCENDING) }
+    var dupSortOrder             by remember { mutableStateOf(FileDupSortOrder.MOST_DUPLICATES) }
+    var dupSelectedIds           by remember { mutableStateOf(setOf<Long>()) }
+    var isDeletingFiles          by remember { mutableStateOf(false) }
+    var showDeleteDialog         by remember { mutableStateOf(false) }
+    var allFilesSelectedIds      by remember { mutableStateOf(setOf<Long>()) }
+    var isDeletingAllFiles       by remember { mutableStateOf(false) }
     var showAllFilesDeleteDialog by remember { mutableStateOf(false) }
 
-    // Auto-select extras whenever groups update (keep largest, mark rest)
     LaunchedEffect(dupGroups) {
         dupSelectedIds = viewModel.autoSelectedFileDuplicateIds()
     }
@@ -169,29 +164,14 @@ fun FilesScreen(
         }
     }
 
-    // ── Sorted lists ──────────────────────────────────────────────────────────
-    val sortedFiles = remember(files, sortOrder, sortDirection) {
+    // ── Grouped lists ─────────────────────────────────────────────────────────
+    val groupedFiles: List<Pair<String, List<FileItem>>> = remember(files, sortOrder, sortDirection) {
         val ascending = sortDirection == SortDirection.ASCENDING
         when (sortOrder) {
-            FileSortOrder.TYPE -> if (ascending)
-                files.sortedByDescending { mimeSortKey(it.mimeType) }
-            else
-                files.sortedBy { mimeSortKey(it.mimeType) }
-
-            FileSortOrder.SIZE -> if (ascending)
-                files.sortedBy { it.size }
-            else
-                files.sortedByDescending { it.size }
-
-            FileSortOrder.DATE -> if (ascending)
-                files.sortedBy { if (it.dateAdded > 0L) it.dateAdded else it.dateModified }
-            else
-                files.sortedByDescending { if (it.dateAdded > 0L) it.dateAdded else it.dateModified }
-
-            FileSortOrder.NAME -> if (ascending)
-                files.sortedBy { it.name.lowercase() }
-            else
-                files.sortedByDescending { it.name.lowercase() }
+            FileSortOrder.TYPE -> groupedByType(files)
+            FileSortOrder.SIZE -> groupedBySize(files).let { if (ascending) it.reversed() else it }
+            FileSortOrder.DATE -> groupedByDate(files).let { if (ascending) it else it.reversed() }
+            FileSortOrder.NAME -> groupedByName(files).let { if (ascending) it else it.reversed() }
         }
     }
 
@@ -238,7 +218,6 @@ fun FilesScreen(
                     )
                 }
                 Spacer(modifier = Modifier.width(12.dp))
-                // Sliding tab pill — matches GalleryScreen exactly
                 FileSlidingTabPill(
                     activeTab     = activeTab,
                     onTabSelected = { activeTab = it },
@@ -260,16 +239,18 @@ fun FilesScreen(
             // ── Tab content ───────────────────────────────────────────────────
             when (activeTab) {
                 FileTab.ALL_FILES -> AllFilesTab(
-                    files             = sortedFiles,
+                    groupedFiles      = groupedFiles,
                     isScanning        = isScanningFiles,
                     isDeleting        = isDeletingAllFiles,
                     sortOrder         = sortOrder,
                     sortDirection     = sortDirection,
                     selectedIds       = allFilesSelectedIds,
                     onSortChange      = { sortOrder = it },
-                    onDirectionToggle = { sortDirection =
-                        if (sortDirection == SortDirection.ASCENDING) SortDirection.DESCENDING
-                        else SortDirection.ASCENDING },
+                    onDirectionToggle = {
+                        sortDirection =
+                            if (sortDirection == SortDirection.ASCENDING) SortDirection.DESCENDING
+                            else SortDirection.ASCENDING
+                    },
                     onSelectionChange = { allFilesSelectedIds = it },
                     onOpenFile        = { file ->
                         try {
@@ -310,7 +291,7 @@ fun FilesScreen(
             }
         }
 
-        // ── Delete confirmation dialog (Duplicates tab) ─────────────────────
+        // ── Delete confirmation dialog (Duplicates tab) ───────────────────────
         if (showDeleteDialog) {
             FileDeleteConfirmDialog(
                 count     = dupSelectedIds.size,
@@ -319,8 +300,8 @@ fun FilesScreen(
                     isDeletingFiles  = true
                     val toDelete     = dupSelectedIds
                     viewModel.deleteFiles(toDelete, context.contentResolver) {
-                        isDeletingFiles  = false
-                        dupSelectedIds   = viewModel.autoSelectedFileDuplicateIds()
+                        isDeletingFiles = false
+                        dupSelectedIds  = viewModel.autoSelectedFileDuplicateIds()
                     }
                 },
                 onDismiss = { showDeleteDialog = false }
@@ -336,8 +317,8 @@ fun FilesScreen(
                     isDeletingAllFiles       = true
                     val toDelete             = allFilesSelectedIds
                     viewModel.deleteFiles(toDelete, context.contentResolver) {
-                        isDeletingAllFiles   = false
-                        allFilesSelectedIds  = emptySet()
+                        isDeletingAllFiles  = false
+                        allFilesSelectedIds = emptySet()
                     }
                 },
                 onDismiss = { showAllFilesDeleteDialog = false }
@@ -347,7 +328,7 @@ fun FilesScreen(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Sliding tab pill — exact clone of GalleryScreen's SlidingTabPill
+// Sliding tab pill
 // ─────────────────────────────────────────────────────────────────────────────
 @Composable
 private fun FileSlidingTabPill(
@@ -449,7 +430,7 @@ private fun StatusRow(text: String, color: Color) {
 // ─────────────────────────────────────────────────────────────────────────────
 @Composable
 private fun AllFilesTab(
-    files:             List<FileItem>,
+    groupedFiles:      List<Pair<String, List<FileItem>>>,
     isScanning:        Boolean,
     isDeleting:        Boolean,
     sortOrder:         FileSortOrder,
@@ -466,11 +447,16 @@ private fun AllFilesTab(
     var searchQuery    by remember { mutableStateOf("") }
     val listState      = rememberLazyListState()
 
-    val displayedFiles = remember(files, searchQuery, isSearchActive) {
-        if (isSearchActive && searchQuery.isNotBlank())
-            files.filter { it.name.contains(searchQuery, ignoreCase = true) }
-        else
-            files
+    // Filter groups by search query while preserving group structure
+    val displayedGroups: List<Pair<String, List<FileItem>>> = remember(groupedFiles, searchQuery, isSearchActive) {
+        if (isSearchActive && searchQuery.isNotBlank()) {
+            groupedFiles.mapNotNull { (header, items) ->
+                val filtered = items.filter { it.name.contains(searchQuery, ignoreCase = true) }
+                if (filtered.isNotEmpty()) header to filtered else null
+            }
+        } else {
+            groupedFiles
+        }
     }
 
     LaunchedEffect(sortOrder) { listState.scrollToItem(0) }
@@ -479,10 +465,8 @@ private fun AllFilesTab(
 
         Column(modifier = Modifier.fillMaxSize()) {
 
-            // Sort bar
-            // ── Sort / Search bar
+            // ── Sort / Search bar ─────────────────────────────────────────────
             if (isSearchActive) {
-                // Search mode — full-width text field replaces the sort bar
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -534,17 +518,12 @@ private fun AllFilesTab(
                             )
                         }
                     }
-
-                    // Close search button
                     Box(
                         modifier = Modifier
                             .size(44.dp)
                             .clip(RoundedCornerShape(12.dp))
                             .background(SortPillBg)
-                            .clickable {
-                                isSearchActive = false
-                                searchQuery    = ""
-                            },
+                            .clickable { isSearchActive = false; searchQuery = "" },
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
@@ -556,7 +535,6 @@ private fun AllFilesTab(
                     }
                 }
             } else {
-                // Normal sort bar
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -564,20 +542,23 @@ private fun AllFilesTab(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment     = Alignment.CenterVertically
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .size(44.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(SortPillBg)
-                            .clickable { onDirectionToggle() },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text       = if (sortDirection == SortDirection.ASCENDING) "↑" else "↓",
-                            color      = AccentBlue,
-                            fontSize   = 26.sp,
-                            fontWeight = FontWeight.Bold
-                        )
+                    // Direction toggle — hidden for TYPE (order is fixed)
+                    if (sortOrder != FileSortOrder.TYPE) {
+                        Box(
+                            modifier = Modifier
+                                .size(44.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(SortPillBg)
+                                .clickable { onDirectionToggle() },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text       = if (sortDirection == SortDirection.ASCENDING) "↑" else "↓",
+                                color      = AccentBlue,
+                                fontSize   = 26.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
                     }
 
                     Box(modifier = Modifier.weight(1f)) {
@@ -592,7 +573,7 @@ private fun AllFilesTab(
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(
-                                    text       = "Sort: ${sortLabel(sortOrder)}",
+                                    text       = "Group By: ${sortLabel(sortOrder)}",
                                     color      = Color.White,
                                     fontSize   = 14.sp,
                                     fontWeight = FontWeight.Medium
@@ -661,48 +642,112 @@ private fun AllFilesTab(
                 }
             }
 
-
-            if (!isScanning && displayedFiles.isEmpty()) {
+            // ── Empty state ───────────────────────────────────────────────────
+            if (!isScanning && displayedGroups.isEmpty()) {
                 Box(
                     modifier         = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
                 ) {
-                    Text(text = "No files found", color = SubText, fontSize = 15.sp)
+                    Text(
+                        text     = if (isSearchActive) "No files match \"$searchQuery\""
+                        else "No files found",
+                        color    = SubText,
+                        fontSize = 15.sp
+                    )
                 }
                 return@Column
             }
 
+            // ── Grouped file list ─────────────────────────────────────────────
             LazyColumn(
                 state          = listState,
                 modifier       = Modifier
                     .fillMaxWidth()
                     .weight(1f),
                 contentPadding = PaddingValues(
-                    start  = 16.dp, end = 16.dp, top = 4.dp, bottom = 100.dp
+                    start  = 16.dp,
+                    end    = 16.dp,
+                    top    = 4.dp,
+                    bottom = 100.dp
                 ),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                verticalArrangement = Arrangement.spacedBy(0.dp)
             ) {
-                items(items = displayedFiles, key = { it.id }) { file ->
-                    val isSelected = file.id in selectedIds
-                    FileCard(
-                        file       = file,
-                        isSelected = isSelected,
-                        isInSelectMode = selectedIds.isNotEmpty(),
-                        onClick = { onOpenFile(file) },
-                        onLongClick = {
-                            onSelectionChange(selectedIds + file.id)
-                        },
-                        onCircleClick = {
-                            onSelectionChange(
-                                if (isSelected) selectedIds - file.id else selectedIds + file.id
-                            )
+                displayedGroups.forEachIndexed { groupIdx, (header, items) ->
+
+                    // ── Section header
+                    item(key = "hdr_${groupIdx}_$header") {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(
+                                    top    = if (groupIdx == 0) 4.dp else 20.dp,
+                                    bottom = 8.dp
+                                ),
+                            verticalAlignment     = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                // Coloured accent line
+                                Box(
+                                    modifier = Modifier
+                                        .width(3.dp)
+                                        .height(14.dp)
+                                        .clip(RoundedCornerShape(2.dp))
+                                        .background(
+                                            Brush.verticalGradient(
+                                                listOf(TabActive1, TabActive2)
+                                            )
+                                        )
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text       = header,
+                                    color      = HeaderText,
+                                    fontSize   = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    letterSpacing = 0.3.sp
+                                )
+                            }
+                            // Item count pill
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(CountPillBg)
+                                    .padding(horizontal = 8.dp, vertical = 3.dp)
+                            ) {
+                                Text(
+                                    text       = "${items.size}",
+                                    color      = AccentBlue,
+                                    fontSize   = 11.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
                         }
-                    )
+                    }
+
+                    // ── Files in this group
+                    items(items = items, key = { "f_${groupIdx}_${it.id}" }) { file ->
+                        val isSelected = file.id in selectedIds
+                        FileCard(
+                            file           = file,
+                            isSelected     = isSelected,
+                            isInSelectMode = selectedIds.isNotEmpty(),
+                            onClick        = { onOpenFile(file) },
+                            onLongClick    = { onSelectionChange(selectedIds + file.id) },
+                            onCircleClick  = {
+                                onSelectionChange(
+                                    if (isSelected) selectedIds - file.id
+                                    else            selectedIds + file.id
+                                )
+                            }
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                    }
                 }
             }
         }
 
-        // ── Animated floating delete button ──────────────────────────────────────
+        // ── Animated floating delete button ───────────────────────────────────
         AnimatedVisibility(
             visible  = selectedIds.isNotEmpty(),
             enter    = slideInVertically(initialOffsetY = { it }, animationSpec = tween(300)) +
@@ -775,7 +820,7 @@ private fun AllFilesTab(
                 }
             }
         }
-    } // end Box
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -807,15 +852,8 @@ private fun DuplicatesTab(
     }
 
     if (!isHashing && groups.isEmpty()) {
-        Box(
-            modifier         = Modifier.fillMaxSize(),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                text     = "No duplicate files found",
-                color    = SubText,
-                fontSize = 15.sp
-            )
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text(text = "No duplicate files found", color = SubText, fontSize = 15.sp)
         }
         return
     }
@@ -824,7 +862,6 @@ private fun DuplicatesTab(
 
         Column(modifier = Modifier.fillMaxSize()) {
 
-            // Sort bar
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -891,7 +928,6 @@ private fun DuplicatesTab(
                 }
             }
 
-            // Group list
             LazyColumn(
                 state          = listState,
                 modifier       = Modifier
@@ -922,7 +958,6 @@ private fun DuplicatesTab(
             }
         }
 
-        // Animated delete button — identical to DuplicatesContent
         AnimatedVisibility(
             visible  = selectedIds.isNotEmpty(),
             enter    = slideInVertically(initialOffsetY = { it }, animationSpec = tween(300)) +
@@ -999,7 +1034,7 @@ private fun DuplicatesTab(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// File duplicate group card  (LazyListScope extension, mirrors DuplicatesContent)
+// File duplicate group card
 // ─────────────────────────────────────────────────────────────────────────────
 private fun LazyListScope.fileDuplicateGroupCard(
     groupIndex:        Int,
@@ -1010,12 +1045,10 @@ private fun LazyListScope.fileDuplicateGroupCard(
     onUnselectGroup:   (Set<Long>) -> Unit,
     onOpenFile:        (FileItem) -> Unit
 ) {
-    val sortedGroup = group.sortedByDescending { it.size }
-    val groupIds    = sortedGroup.map { it.id }.toSet()
-
+    val sortedGroup  = group.sortedByDescending { it.size }
+    val groupIds     = sortedGroup.map { it.id }.toSet()
     val selectedSize = sortedGroup.filter { it.id in selectedIds }.sumOf { it.size }
 
-    // ── Header ────────────────────────────────────────────────────────────────
     item(key = "fdup_hdr_$groupIndex") {
         Column(
             modifier = Modifier
@@ -1035,7 +1068,6 @@ private fun LazyListScope.fileDuplicateGroupCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment     = Alignment.CenterVertically
             ) {
-                // Count / size pill
                 Box(
                     modifier = Modifier
                         .clip(RoundedCornerShape(8.dp))
@@ -1050,49 +1082,24 @@ private fun LazyListScope.fileDuplicateGroupCard(
                         .padding(horizontal = 10.dp, vertical = 5.dp)
                 ) {
                     when {
-                        showSizeHeader && selectedSize > 0L -> {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    text = formatBytes(selectedSize),
-                                    color = AccentBlue, fontSize = 14.sp, fontWeight = FontWeight.Bold
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(
-                                    text = "selected", color = HeaderText,
-                                    fontSize = 13.sp, fontWeight = FontWeight.Medium
-                                )
-                            }
+                        showSizeHeader && selectedSize > 0L -> Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(formatBytes(selectedSize), color = AccentBlue, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("selected", color = HeaderText, fontSize = 13.sp, fontWeight = FontWeight.Medium)
                         }
-                        showSizeHeader -> {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    text = formatBytes(sortedGroup.sumOf { it.size }),
-                                    color = AccentBlue, fontSize = 14.sp, fontWeight = FontWeight.Bold
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(
-                                    text = "total size", color = HeaderText,
-                                    fontSize = 13.sp, fontWeight = FontWeight.Medium
-                                )
-                            }
+                        showSizeHeader -> Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(formatBytes(sortedGroup.sumOf { it.size }), color = AccentBlue, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("total size", color = HeaderText, fontSize = 13.sp, fontWeight = FontWeight.Medium)
                         }
-                        else -> {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    text = "${group.size}",
-                                    color = AccentBlue, fontSize = 14.sp, fontWeight = FontWeight.Bold
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(
-                                    text = "duplicates found", color = HeaderText,
-                                    fontSize = 13.sp, fontWeight = FontWeight.Medium
-                                )
-                            }
+                        else -> Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("${group.size}", color = AccentBlue, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("duplicates found", color = HeaderText, fontSize = 13.sp, fontWeight = FontWeight.Medium)
                         }
                     }
                 }
 
-                // Unselect button
                 Box(
                     modifier = Modifier
                         .size(36.dp)
@@ -1112,7 +1119,6 @@ private fun LazyListScope.fileDuplicateGroupCard(
         }
     }
 
-    // ── File rows (each row = 1 file row, not a grid) ─────────────────────────
     sortedGroup.forEachIndexed { fileIndex, file ->
         val isLastItem = fileIndex == sortedGroup.lastIndex
         val isSelected = file.id in selectedIds
@@ -1166,7 +1172,6 @@ private fun LazyListScope.fileDuplicateGroupCard(
                     verticalAlignment     = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    // File type icon
                     Box(
                         modifier         = Modifier
                             .size(42.dp)
@@ -1186,7 +1191,6 @@ private fun LazyListScope.fileDuplicateGroupCard(
                         Text(text = fileEmoji(category), fontSize = 18.sp)
                     }
 
-                    // Name + size
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text       = file.name,
@@ -1214,23 +1218,15 @@ private fun LazyListScope.fileDuplicateGroupCard(
                                     fontWeight = FontWeight.SemiBold
                                 )
                             }
-                            Text(
-                                text     = formatBytes(file.size),
-                                color    = SubText,
-                                fontSize = 11.sp
-                            )
+                            Text(text = formatBytes(file.size), color = SubText, fontSize = 11.sp)
                         }
                     }
 
-                    // Selection checkbox
                     Box(
                         modifier = Modifier
                             .size(26.dp)
                             .clip(CircleShape)
-                            .background(
-                                if (isSelected) AccentBlue.copy(alpha = 0.15f)
-                                else            IconBg
-                            )
+                            .background(if (isSelected) AccentBlue.copy(alpha = 0.15f) else IconBg)
                             .border(
                                 width = 1.dp,
                                 color = if (isSelected) AccentBlue else Color(0xFF3A4468),
@@ -1378,9 +1374,7 @@ private fun FileCard(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
-            .background(
-                if (isSelected) CardBg.copy(alpha = 0.7f) else CardBg
-            )
+            .background(if (isSelected) CardBg.copy(alpha = 0.7f) else CardBg)
             .border(
                 width = 1.dp,
                 brush = if (isSelected)
@@ -1389,10 +1383,7 @@ private fun FileCard(
                     Brush.linearGradient(listOf(CardBorder1, CardBorder2)),
                 shape = RoundedCornerShape(16.dp)
             )
-            .combinedClickable(
-                onClick     = onClick,
-                onLongClick = onLongClick
-            )
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(horizontal = 16.dp, vertical = 14.dp)
     ) {
         Row(
@@ -1418,7 +1409,6 @@ private fun FileCard(
                 Text(text = fileEmoji(category), fontSize = 20.sp)
             }
 
-            // Name + meta — takes all remaining space so nothing truncates it
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text       = file.name,
@@ -1450,15 +1440,12 @@ private fun FileCard(
                 }
             }
 
-            // Selection circle — only visible when at least one file is selected
             if (isInSelectMode) {
                 Box(
                     modifier = Modifier
                         .size(28.dp)
                         .clip(CircleShape)
-                        .background(
-                            if (isSelected) AccentBlue.copy(alpha = 0.15f) else IconBg
-                        )
+                        .background(if (isSelected) AccentBlue.copy(alpha = 0.15f) else IconBg)
                         .border(
                             width = 1.dp,
                             color = if (isSelected) AccentBlue else Color(0xFF3A4468),
@@ -1482,18 +1469,120 @@ private fun FileCard(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Helpers
+// Grouping helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Groups files by category in the fixed order: PDF → Document → APK → Archive → Spreadsheet → Presentation → Other */
+private fun groupedByType(files: List<FileItem>): List<Pair<String, List<FileItem>>> {
+    val order = listOf("PDF", "Document", "APK", "Archive", "Spreadsheet", "Presentation", "Other")
+    return order.mapNotNull { cat ->
+        val group = files.filter { mimeCategory(it.mimeType) == cat }
+        if (group.isNotEmpty()) cat to group else null
+    }
+}
+
+/** Groups files into 10 MB size buckets. The largest file determines how many buckets are needed. */
+private fun groupedBySize(files: List<FileItem>): List<Pair<String, List<FileItem>>> {
+    if (files.isEmpty()) return emptyList()
+
+    val mb      = 1024L * 1024L
+    val maxSize = files.maxOf { it.size }
+
+    data class Bucket(val label: String, val min: Long, val max: Long)
+
+    val buckets = mutableListOf<Bucket>()
+    buckets.add(Bucket("Below 1 MB", 0L, mb - 1))
+
+    var lo = 1L
+    while (lo * mb <= maxSize) {
+        val hi = lo + 9L   // 10 MB wide slices: 1-10, 11-20, 21-30 …
+        val label = if (lo == 1L) "1 – 10 MB" else "${lo} – ${hi} MB"
+        buckets.add(Bucket(label, lo * mb, hi * mb + mb - 1))
+        lo += 10L
+    }
+
+    return buckets.mapNotNull { b ->
+        val group = files.filter { it.size in b.min..b.max }
+        if (group.isNotEmpty()) b.label to group.sortedByDescending { it.size } else null
+    }
+}
+
+/** Groups files by calendar day (Today / Yesterday / date string), newest bucket first. */
+private fun groupedByDate(files: List<FileItem>): List<Pair<String, List<FileItem>>> {
+    if (files.isEmpty()) return emptyList()
+
+    val fmt       = java.text.SimpleDateFormat("d MMMM yyyy", java.util.Locale.getDefault())
+    val today     = java.util.Calendar.getInstance()
+    val yesterday = java.util.Calendar.getInstance()
+        .also { it.add(java.util.Calendar.DAY_OF_YEAR, -1) }
+
+    fun calFor(secs: Long): java.util.Calendar =
+        java.util.Calendar.getInstance().also { it.timeInMillis = secs * 1_000L }
+
+    fun sameDay(a: java.util.Calendar, b: java.util.Calendar) =
+        a.get(java.util.Calendar.YEAR) == b.get(java.util.Calendar.YEAR) &&
+                a.get(java.util.Calendar.DAY_OF_YEAR) == b.get(java.util.Calendar.DAY_OF_YEAR)
+
+    fun dayKey(secs: Long): Long {
+        val c = calFor(secs)
+        return c.get(java.util.Calendar.YEAR).toLong() * 10_000L +
+                (c.get(java.util.Calendar.MONTH) + 1).toLong() * 100L +
+                c.get(java.util.Calendar.DAY_OF_MONTH).toLong()
+    }
+
+    fun label(secs: Long): String {
+        val c = calFor(secs)
+        return when {
+            sameDay(c, today)     -> "Today"
+            sameDay(c, yesterday) -> "Yesterday"
+            else                  -> fmt.format(c.time)
+        }
+    }
+
+    fun effectiveDate(f: FileItem) = if (f.dateAdded > 0L) f.dateAdded else f.dateModified
+
+    return files
+        .groupBy { dayKey(effectiveDate(it)) }
+        .entries
+        .sortedByDescending { it.key }
+        .map { (_, group) ->
+            val sorted = group.sortedByDescending { effectiveDate(it) }
+            label(effectiveDate(sorted.first())) to sorted
+        }
+}
+
+/** Groups files alphabetically by the first letter of the filename. */
+private fun groupedByName(files: List<FileItem>): List<Pair<String, List<FileItem>>> {
+    return files
+        .groupBy {
+            val first = it.name.uppercase().firstOrNull()
+            when {
+                first == null          -> "#"
+                first.isLetter()       -> first.toString()
+                else                   -> "#"   // digits, dots, symbols → "#" bucket
+            }
+        }
+        .entries
+        .sortedWith(compareBy {
+            // Letters come first in A–Z order, then "#" at the end
+            if (it.key == "#") "\uFFFF" else it.key
+        })
+        .map { (letter, group) -> letter to group.sortedBy { it.name.lowercase() } }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Category / display helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
 internal fun mimeCategory(mime: String): String = when {
     mime == "application/vnd.android.package-archive"                        -> "APK"
     mime.contains("zip") || mime.contains("rar") || mime.contains("tar") ||
-            mime.contains("7z")  || mime.contains("compress")               -> "Archive"
+            mime.contains("7z") || mime.contains("compress")                 -> "Archive"
     mime.contains("pdf")                                                     -> "PDF"
     mime.contains("word") || mime.contains("document") ||
-            mime == "text/plain" || mime.contains("rtf")                    -> "Document"
+            mime == "text/plain" || mime.contains("rtf")                     -> "Document"
     mime.contains("sheet") || mime.contains("excel") || mime.contains("csv")-> "Spreadsheet"
-    mime.contains("presentation") || mime.contains("powerpoint")            -> "Presentation"
+    mime.contains("presentation") || mime.contains("powerpoint")             -> "Presentation"
     else                                                                     -> "Other"
 }
 
@@ -1512,16 +1601,6 @@ private fun fileEmoji(category: String): String = when (category) {
     "Spreadsheet"  -> "📊"
     "Presentation" -> "📑"
     else           -> "📁"
-}
-
-private fun mimeSortKey(mime: String): Int = when (mimeCategory(mime)) {
-    "PDF"          -> 0
-    "Document"     -> 1
-    "APK"          -> 2
-    "Archive"      -> 3
-    "Spreadsheet"  -> 4
-    "Presentation" -> 5
-    else           -> 6
 }
 
 private fun categoryColors(category: String): Pair<Color, Color> = when (category) {
@@ -1545,5 +1624,3 @@ private fun formatBytes(bytes: Long): String {
         else      -> "${bytes} B"
     }
 }
-
-

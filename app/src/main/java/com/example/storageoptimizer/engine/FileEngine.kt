@@ -103,9 +103,67 @@ object FileEngine {
                 }
         }
 
+        // Merge filesystem scan — fills gaps MediaStore misses
+        val mediaStorePaths = fileList.map { it.path }.toSet()
+
+        val fsFiles = loadFilesFromFilesystem()
+            .filter { it.path.isNotBlank() && it.path !in mediaStorePaths }
+
+        fileList.addAll(fsFiles)
+
         return fileList.sortedByDescending {
             if (it.dateAdded > 0L) it.dateAdded else it.dateModified
         }
+    }
+
+
+    fun loadFilesFromFilesystem(rootPath: String = "/storage/emulated/0"): List<FileItem> {
+        val fileList = mutableListOf<FileItem>()
+        val root     = java.io.File(rootPath)
+
+        // Folders MediaStore completely misses — worth scanning directly
+        val targetDirs = listOf(
+            "Download",
+            "Documents",
+            "Android/data",   // app cache/data — visible with MANAGE_EXTERNAL_STORAGE
+            "Android/obb"     // game data
+        ).map { java.io.File(root, it) }
+            .filter { it.exists() && it.isDirectory }
+
+        fun scanDir(dir: java.io.File) {
+            try {
+                dir.listFiles()?.forEach { file ->
+                    if (file.isDirectory) {
+                        scanDir(file)   // recurse
+                    } else if (file.isFile && file.length() > 0) {
+                        val mime = guessMime(file.name)
+                        // Skip media files — handled by ImageEngine
+                        if (mime.startsWith("image/") ||
+                            mime.startsWith("video/") ||
+                            mime.startsWith("audio/")) return@forEach
+
+                        fileList.add(
+                            FileItem(
+                                id           = file.absolutePath.hashCode().toLong(),
+                                uri          = Uri.fromFile(file),
+                                name         = file.name,
+                                size         = file.length(),
+                                mimeType     = mime,
+                                dateModified = file.lastModified() / 1000L,
+                                dateAdded    = file.lastModified() / 1000L,
+                                path         = file.absolutePath,
+                                hash         = null
+                            )
+                        )
+                    }
+                }
+            } catch (_: SecurityException) {
+                // Some subdirectories may still be restricted — skip them silently
+            }
+        }
+
+        targetDirs.forEach { scanDir(it) }
+        return fileList
     }
 
     // ── File hashing ──────────────────────────────────────────────────────────
