@@ -11,6 +11,7 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.border
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -73,6 +74,26 @@ fun HomeScreen(
     val files           by viewModel.files.collectAsState()
     val isScanningFiles by viewModel.isScanningFiles.collectAsState()
     val fileDuplicateGroups by viewModel.fileDuplicateGroups.collectAsState()
+
+    // ── Apps data ─────────────────────────────────────────────
+    val packageManager = context.packageManager
+
+    val installedApps = remember {
+        packageManager.getInstalledApplications(PackageManager.GET_META_DATA)
+            .filter { it.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM == 0 }
+    }
+
+    val totalAppsSize = remember(installedApps) {
+        installedApps.sumOf { appInfo ->
+            try {
+                java.io.File(appInfo.sourceDir).length()
+            } catch (_: Exception) { 0L }
+        }
+    }
+
+    val previewAppIcons = remember(installedApps) {
+        installedApps.take(4).map { it.loadIcon(packageManager) }
+    }
 
     val storageStat  = remember { StatFs(Environment.getDataDirectory().path) }
     val scope        = rememberCoroutineScope()
@@ -268,6 +289,16 @@ fun HomeScreen(
                         scanFilesWithPermission()
                     }
                 }
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // ── Apps card
+            AppsCard(
+                appCount       = installedApps.size,
+                totalAppsSize  = totalAppsSize,
+                appIcons       = previewAppIcons,
+                hasEverScanned = lastScannedAt != null
             )
         }
     }
@@ -606,11 +637,7 @@ private fun FilesCard(
                 Spacer(modifier = Modifier.height(16.dp))
 
                 // File type visual — three square tiles mirroring the images thumbnail row
-                if (!isScanning) {
-                    FileTypePreview(fileCount = fileCount)
-                    Spacer(modifier = Modifier.height(16.dp))
-                } else {
-                    // Loading shimmer bar while scanning
+                if (isScanning) {
                     LinearProgressIndicator(
                         modifier     = Modifier
                             .fillMaxWidth()
@@ -619,6 +646,9 @@ private fun FilesCard(
                         color        = filePurple,
                         trackColor   = Color(0xFF2A2F4A)
                     )
+                    Spacer(modifier = Modifier.height(16.dp))
+                } else if (hasData) {
+                    FileTypePreview(fileCount = fileCount)
                     Spacer(modifier = Modifier.height(16.dp))
                 }
 
@@ -655,6 +685,161 @@ private fun FilesCard(
                             )
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+
+// ── Apps summary card ─────────────────────────────────────────────────────────
+@Composable
+private fun AppsCard(
+    appCount:      Int,
+    totalAppsSize: Long,
+    appIcons:      List<android.graphics.drawable.Drawable>,
+    hasEverScanned: Boolean
+) {
+    val appStart = Color(0xFF5C6BC0) // Indigo
+    val appEnd   = Color(0xFF26C6DA) // Cyan
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(20.dp))
+            .background(Brush.linearGradient(listOf(appStart, appEnd)))
+            .padding(1.5.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(19.dp))
+                .background(CardBackground)
+                .padding(20.dp)
+        ) {
+            Column {
+
+                // Title row
+                Row(
+                    modifier              = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment     = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text       = "Apps",
+                        color      = TextPrimary,
+                        fontSize   = 26.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    if (totalAppsSize > 0L) {
+                        Text(
+                            text     = "${formatBytes(totalAppsSize)} total",
+                            color    = TextSecondary,
+                            fontSize = 14.sp
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // Gradient bar
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(4.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(
+                            Brush.horizontalGradient(listOf(appStart, appEnd))
+                        )
+                )
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // Stats text
+                val statsText = when {
+                    !hasEverScanned -> "Tap Scan Storage to analyse your apps"
+                    appCount > 0    -> "$appCount apps installed • ${formatBytes(totalAppsSize)} used"
+                    else            -> "No user-installed apps found"
+                }
+
+                Text(text = statsText, color = TextSecondary, fontSize = 13.sp)
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // App icon preview row — mirrors image/file thumbnail rows
+                if (hasEverScanned) {
+                    AppIconPreview(appIcons = appIcons)
+                    Spacer(modifier = Modifier.height(16.dp))
+                }
+
+                Row(
+                    modifier              = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    Button(
+                        onClick        = { /* TODO: navigate to apps screen */ },
+                        enabled        = false,   // disabled until apps screen is built
+                        shape          = RoundedCornerShape(14.dp),
+                        colors         = ButtonDefaults.buttonColors(
+                            containerColor         = ReviewButton,
+                            disabledContainerColor = ReviewButton.copy(alpha = 0.5f)
+                        ),
+                        contentPadding = PaddingValues(horizontal = 28.dp, vertical = 12.dp)
+                    ) {
+                        Text(
+                            text       = "Coming Soon",
+                            color      = TextPrimary.copy(alpha = 0.5f),
+                            fontSize   = 15.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ── App icon preview row ──────────────────────────────────────────────────────
+@Composable
+private fun AppIconPreview(
+    appIcons: List<android.graphics.drawable.Drawable>
+) {
+    val maxItems = 4
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        repeat(maxItems) { index ->
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .aspectRatio(1f)
+                    .clip(RoundedCornerShape(18.dp)) // slightly bigger feel
+                    .background(Color(0xFF12151F)),
+                contentAlignment = Alignment.Center
+            ) {
+                if (index < appIcons.size) {
+
+                    val bitmap = remember(appIcons[index]) {
+                        val bmp = android.graphics.Bitmap.createBitmap(
+                            appIcons[index].intrinsicWidth.coerceAtLeast(1),
+                            appIcons[index].intrinsicHeight.coerceAtLeast(1),
+                            android.graphics.Bitmap.Config.ARGB_8888
+                        )
+                        val canvas = android.graphics.Canvas(bmp)
+                        appIcons[index].setBounds(0, 0, canvas.width, canvas.height)
+                        appIcons[index].draw(canvas)
+                        bmp.asImageBitmap()
+                    }
+
+                    Image(
+                        bitmap = bitmap,
+                        contentDescription = null,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(8.dp) // increased from 6 → gives better breathing room
+                    )
                 }
             }
         }
