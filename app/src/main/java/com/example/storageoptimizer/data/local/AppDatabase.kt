@@ -7,11 +7,16 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [ImageEntity::class, FileEntity::class], version = 4, exportSchema = false)
+@Database(
+    entities    = [ImageEntity::class, FileEntity::class, AppEntity::class],
+    version     = 5,
+    exportSchema = false
+)
 abstract class AppDatabase : RoomDatabase() {
 
     abstract fun imageDao(): ImageDao
-    abstract fun fileDao(): FileDao
+    abstract fun fileDao():  FileDao
+    abstract fun appDao():   AppDao
 
     companion object {
 
@@ -48,6 +53,22 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS apps (
+                        packageName TEXT PRIMARY KEY NOT NULL,
+                        name        TEXT NOT NULL,
+                        apkSize     INTEGER NOT NULL,
+                        dataSize    INTEGER NOT NULL,
+                        versionName TEXT NOT NULL,
+                        installedAt INTEGER NOT NULL,
+                        lastUsed    INTEGER NOT NULL
+                    )
+                """.trimIndent())
+            }
+        }
+
         fun getInstance(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -55,7 +76,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "storage_optimizer.db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                     .build()
                     .also { INSTANCE = it }
             }

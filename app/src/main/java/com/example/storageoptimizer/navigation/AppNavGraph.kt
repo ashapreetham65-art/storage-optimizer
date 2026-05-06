@@ -12,18 +12,15 @@ import com.example.storageoptimizer.data.ImageRepository
 import com.example.storageoptimizer.data.MainViewModel
 import com.example.storageoptimizer.data.local.AppDatabase
 import com.example.storageoptimizer.ui.theme.gallery.GalleryScreen
-import com.example.storageoptimizer.ui.home.HomeScreen
+import com.example.storageoptimizer.ui.theme.home.HomeScreen
 import com.example.storageoptimizer.ui.files.FilesScreen
+import com.example.storageoptimizer.ui.theme.apps.AppsScreen
 
 @Composable
 fun AppNavGraph(navController: NavHostController) {
 
     val context = LocalContext.current
 
-    // remember() keeps these alive across recompositions.
-    // Without it, ImageRepository is a new object on every recomposition,
-    // which changes the Factory, which causes Jetpack to recreate the
-    // ViewModel — wiping pendingDeleteIds and breaking the system delete dialog.
     val db = remember {
         AppDatabase.getInstance(context)
     }
@@ -35,8 +32,10 @@ fun AppNavGraph(navController: NavHostController) {
     }
 
     val fileDao = remember(db) { db.fileDao() }
+    val appDao  = remember(db) { db.appDao()  }
+
     val viewModel: MainViewModel = viewModel(
-        factory = MainViewModel.Factory(repository, fileDao, prefs)
+        factory = MainViewModel.Factory(repository, fileDao, appDao, prefs)
     )
 
     NavHost(
@@ -47,13 +46,10 @@ fun AppNavGraph(navController: NavHostController) {
             HomeScreen(
                 viewModel          = viewModel,
                 onReviewClick      = {
-                    if (viewModel.hasData()) {
-                        navController.navigate(Routes.GALLERY)
-                    }
+                    if (viewModel.hasData()) navController.navigate(Routes.GALLERY)
                 },
-                onFilesReviewClick = {
-                    navController.navigate(Routes.FILES)
-                }
+                onFilesReviewClick = { navController.navigate(Routes.FILES) },
+                onAppsReviewClick  = { navController.navigate(Routes.APPS)  }
             )
         }
 
@@ -66,6 +62,13 @@ fun AppNavGraph(navController: NavHostController) {
 
         composable(Routes.FILES) {
             FilesScreen(
+                viewModel      = viewModel,
+                onNavigateBack = { navController.popBackStack() }
+            )
+        }
+
+        composable(Routes.APPS) {
+            AppsScreen(
                 viewModel      = viewModel,
                 onNavigateBack = { navController.popBackStack() }
             )
